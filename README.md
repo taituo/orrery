@@ -24,13 +24,14 @@ Pre-release. What is and isn't verified:
 
 | Area | State |
 | --- | --- |
-| ACP client, Kiro V3/v2 adapters, gateway | Tested against a wire-faithful mock built from the Kiro docs, the official ACP SDK and the official JSON schema. Crash/resume paths are covered by tests. **Not yet run against a real `kiro-cli`** — see [docs/KIRO.md](docs/KIRO.md). |
+| ACP client, Kiro V3/v2 adapters, gateway | Tested against a wire-faithful mock built from the Kiro docs, the official ACP SDK and the official JSON schema, and the crash/resume paths are covered. The real `kiro-cli` (2.35.1) installs and launches in CI. Without credentials it stops at sign-in, which Orrery reports clearly. **A full turn against the real CLI needs a `KIRO_API_KEY`** — add it as a repository secret and the CI job `e2e-kiro` runs. See [docs/KIRO.md](docs/KIRO.md). |
 | Providers, Clef, memory, RAG | Tested against fake OpenAI/Clef servers on real Postgres 16 + pgvector |
 | Temporal workflows | Tested on the Temporal dev server (locally and in CI) |
 | API | End-to-end tests: auth/RBAC, bots, threads, steering, approvals, memory, knowledge, routines, secrets, webhooks, SSE resume, MCP, the delivery outbox |
 | Full stack | `scripts/e2e.mjs` run against the production bundles: API → Temporal → worker → gateway → mock Kiro, with an approval, session reuse and a worker SIGKILL mid-turn (the turn resumes, nothing is re-prompted, output appears once). CI repeats this on Docker Compose. |
 | Web console | Typechecked and built, then exercised in a browser against the in-browser mock |
-| Helm chart | `helm lint` and kubeconform pass in CI |
+| Images | `api`, `worker`, `web`, `computer` and `computer-mock` build for amd64 and arm64 in CI and are pushed to `ghcr.io/taituo/orrery-*` from `main` |
+| Helm chart | `helm lint` and kubeconform pass in CI. Not yet installed on a live cluster. |
 
 Docs:
 - [Architecture](docs/ARCHITECTURE.md)
