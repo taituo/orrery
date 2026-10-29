@@ -24,12 +24,18 @@ Pre-release. What is and isn't verified:
 
 | Area | State |
 | --- | --- |
-| ACP client, Kiro V3/v2 adapters, gateway | Tested against a wire-faithful mock built from the Kiro docs, the official ACP SDK and the official JSON schema. **Not yet run against a real `kiro-cli`.** |
+| ACP client, Kiro V3/v2 adapters, gateway | Tested against a wire-faithful mock built from the Kiro docs, the official ACP SDK and the official JSON schema. Crash/resume paths are covered by tests. **Not yet run against a real `kiro-cli`** — see [docs/KIRO.md](docs/KIRO.md). |
 | Providers, Clef, memory, RAG | Tested against fake OpenAI/Clef servers on real Postgres 16 + pgvector |
-| Temporal workflows | Scheduler unit tests pass. The Temporal integration tests need the Temporal test server (they run in CI). |
-| API | End-to-end tests: auth/RBAC, bots, threads, steering, approvals, memory, knowledge, routines, secrets, webhooks, SSE resume, MCP |
-| Web console | Typechecked, built and exercised in a browser against the in-browser mock |
-| Kubernetes / Helm / Docker | In progress |
+| Temporal workflows | Tested on the Temporal dev server (locally and in CI) |
+| API | End-to-end tests: auth/RBAC, bots, threads, steering, approvals, memory, knowledge, routines, secrets, webhooks, SSE resume, MCP, the delivery outbox |
+| Full stack | `scripts/e2e.mjs` run against the production bundles: API → Temporal → worker → gateway → mock Kiro, with an approval, session reuse and a worker SIGKILL mid-turn (the turn resumes, nothing is re-prompted, output appears once). CI repeats this on Docker Compose. |
+| Web console | Typechecked and built, then exercised in a browser against the in-browser mock |
+| Helm chart | `helm lint` and kubeconform pass in CI |
+
+Docs:
+- [Architecture](docs/ARCHITECTURE.md)
+- [Kiro over ACP compatibility](docs/KIRO.md)
+- [Deployment and configuration](docs/DEPLOYMENT.md)
 
 ## Layout
 
@@ -50,6 +56,14 @@ apps/
   api            Hono REST + SSE API, OIDC auth, platform MCP server
   worker         Temporal workers (agent / acp / memory queues), bot computer provider
   web            React console; `build:prototype` makes a single-file clickable prototype
+```
+
+## Quick start
+
+```sh
+cp .env.example .env                       # add KIRO_API_KEY, or:
+ORRERY_COMPUTER_TARGET=computer-mock docker compose up --build
+open http://localhost:8080                 # sign in with: dev-token
 ```
 
 ## Development

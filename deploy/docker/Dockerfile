@@ -10,13 +10,14 @@
 #
 #   docker build -f deploy/docker/Dockerfile --target api -t orrery/api .
 
-ARG NODE_VERSION=22.12.0
+ARG NODE_VERSION=22
 ARG NGINX_VERSION=1.27-alpine
 
 ############################################################ build
 FROM node:${NODE_VERSION}-bookworm-slim AS build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true
-RUN corepack enable
+# pnpm from the npm registry (older bundled corepack builds can't verify newer pnpm signatures)
+RUN npm install -g pnpm@10.28.0
 WORKDIR /src
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm fetch --frozen-lockfile
