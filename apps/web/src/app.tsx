@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { NavLink, Outlet, createBrowserRouter, createHashRouter, RouterProvider, useLocation } from "react-router";
+import { NavLink, Outlet, createBrowserRouter, createMemoryRouter, RouterProvider, useLocation } from "react-router";
 import { apiPromise, auth, config, isPrototype, onUnauthorized, useMock, type OrreryApi, type Principal } from "./api";
 import { OrreryMark, StatusDot } from "./components/ui";
 import { useFleet } from "./lib/fleet";
@@ -132,7 +132,8 @@ const routes = [
     ],
   },
 ];
-const router = isPrototype ? createHashRouter(routes) : createBrowserRouter(routes);
+// The prototype is embedded as a single page: keep navigation in memory instead of the URL.
+const router = isPrototype ? createMemoryRouter(routes) : createBrowserRouter(routes);
 
 function Login({ error, onToken }: { error: string | null; onToken: (t: string) => void }) {
   const [token, setToken] = useState("");
