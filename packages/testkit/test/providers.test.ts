@@ -117,3 +117,13 @@ describe("Clef decisions (System One API)", () => {
     expect(reg.decisions()?.id).toBe("llm:local");
   });
 });
+
+describe("configuration", () => {
+  it("treats empty environment values as unset", async () => {
+    const { loadEnv } = await import("@orrery/core");
+    const env = loadEnv({ LANGFUSE_BASE_URL: "", OIDC_ISSUER: "  ", TEMPORAL_ADDRESS: "temporal:7233", NODE_ENV: "test" } as NodeJS.ProcessEnv);
+    expect(env.LANGFUSE_BASE_URL).toBeUndefined();
+    expect(env.OIDC_ISSUER).toBeUndefined();
+    expect(env.TEMPORAL_ADDRESS).toBe("temporal:7233");
+  });
+});

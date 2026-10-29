@@ -31,6 +31,9 @@ function required(name: string): string {
   return v;
 }
 
+// Empty values (e.g. an unset optional secret rendered as "") must not reach the agent as set.
+for (const k of ["KIRO_API_KEY", "KIRO_MODE", "KIRO_MODEL", "AGENT_COMMAND", "AGENT_ARGS", "KIRO_ACCESS_TOKEN_FILE"]) if (process.env[k] === "") delete process.env[k];
+
 const computerId = required("COMPUTER_ID");
 const secret = required("GATEWAY_TOKEN_SECRET");
 const port = Number(process.env.GATEWAY_PORT ?? 7777);
