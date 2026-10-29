@@ -6,6 +6,7 @@ import path from "node:path";
 import { signToken, foldTranscript, deferred, type AgentEvent } from "@orrery/core";
 import {
   GATEWAY_TOKEN_AUDIENCE,
+  KiroV2Adapter,
   KiroV3Adapter,
   connectWebSocket,
   memoryTransportPair,
@@ -32,7 +33,7 @@ interface Harness {
 
 let current: Harness | null = null;
 
-async function startHarness(): Promise<Harness> {
+async function startHarness(generation: "v3" | "v2" = "v3"): Promise<Harness> {
   const agents: MockKiroAgent[] = [];
   let promptCount = 0;
   let kill: () => void = () => undefined;
@@ -42,7 +43,7 @@ async function startHarness(): Promise<Harness> {
     defaultCwd: workspace,
     spawnAgent: (): AgentProcess => {
       const [down, agentSide] = memoryTransportPair();
-      const agent = new MockKiroAgent(agentSide, { generation: "v3" });
+      const agent = new MockKiroAgent(agentSide, { generation });
       agent.peer.tap = (dir, m) => {
         if (dir === "in" && "method" in m && m.method === "session/prompt") promptCount++;
       };
@@ -110,6 +111,31 @@ describe("ACP gateway", () => {
     expect(res.agentEpoch).toBe(h.gateway.agentEpoch);
     expect(foldTranscript(r.events).assistantText).toContain("You said: hello gateway.");
     expect(h.prompts()).toBe(1);
+  });
+
+  it("relays a full Kiro v2 turn: extension notifications stay ordered with session updates", async () => {
+    // v2 interleaves `_kiro.dev/*` notifications (metadata, commands) with `session/update`;
+    // all share the gateway's per-session seq, so none may be dropped as a replay duplicate.
+    for (let i = 0; i < 5; i++) {
+      const h = await startHarness("v2");
+      const r = recorder();
+      const res = await runAcpTurn(
+        { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV2Adapter(), viaGateway: true },
+        { requestKey: `run_v2_${i}`, messageId: "m", session, prompt: [{ type: "text", text: "hello v2\nrun: echo hi\nplan" }] },
+        { ...r, decidePermission: allowOnce },
+        new AbortController().signal,
+      );
+      expect(res.stopReason).toBe("end_turn");
+      const t = foldTranscript(r.events);
+      expect(t.assistantText).toBe("You said: hello v2. Ran `echo hi`. ");
+      expect(t.thoughtText).toContain("Considering");
+      expect(t.tools.map((x) => x.status)).toEqual(["completed"]);
+      expect(t.plan.length).toBe(3);
+      expect(r.events.some((e) => e.type === "usage" && e.usage.metering?.credits)).toBe(true);
+      current!.server.close();
+      await current!.gateway.stop();
+      current = null;
+    }
   });
 
   it("survives a dropped connection mid-turn: reconnects, replays by seq, never re-prompts", async () => {

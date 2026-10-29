@@ -105,8 +105,14 @@ export class AcpClient {
       this.peer.onRequest(METHODS.elicitationCreate, (p, ctx) => e(p as CreateElicitationRequest, ctx));
     }
 
+    // Extension notifications (`_kiro/*`, `_kiro.dev/*`, …) share the per-session queue with
+    // `session/update`: they are part of the same ordered stream (and, behind the gateway, the
+    // same `seq` space), so handling them out of order would reorder events and break replay
+    // de-duplication.
     this.peer.setFallbackNotificationHandler((params, method) => {
-      if (method.startsWith("_") || method.includes("/")) return h.onExtNotification?.(method, params);
+      if (!(method.startsWith("_") || method.includes("/")) || !h.onExtNotification) return;
+      const key = isRecord(params) && typeof params.sessionId === "string" ? params.sessionId : "_";
+      return this.updateQueue.run(key, () => h.onExtNotification!(method, params));
     });
     this.peer.setFallbackRequestHandler(async (params, ctx) => {
       if (h.onExtRequest) {

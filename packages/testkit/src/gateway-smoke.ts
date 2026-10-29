@@ -31,6 +31,7 @@ const res = await runAcpTurn(
   },
   AbortSignal.timeout(Number(process.env.SMOKE_TIMEOUT_MS ?? 120_000)),
 );
+if (process.env.SMOKE_VERBOSE) for (const e of events) console.error(e.type, JSON.stringify(e).slice(0, 200));
 const t = foldTranscript(events);
 console.log(
   JSON.stringify(
