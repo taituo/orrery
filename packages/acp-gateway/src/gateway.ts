@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { deferred, sleep, type Deferred } from "@orrery/core";
-import {
+import { classifyAgentFailure, type AgentFailure,
   FsService,
   GATEWAY_ERRORS,
   GATEWAY_METHODS,
@@ -43,6 +43,8 @@ export interface AgentProcess {
   pid: number | null;
   exited: Promise<{ code: number | null; signal: string | null }>;
   kill(signal?: NodeJS.Signals): void;
+  /** Recent stderr of the process (used to explain startup failures). */
+  stderrTail?(): string;
 }
 
 export interface GatewayOptions {
@@ -139,6 +141,9 @@ export class AcpGateway {
     return this.init !== null && this.down !== null && !this.down.isClosed;
   }
 
+  /** Why the agent is not running, if it failed to start. */
+  lastError: AgentFailure | null = null;
+
   get agentEpoch(): string {
     return this.epoch;
   }
@@ -175,6 +180,7 @@ export class AcpGateway {
         { timeoutMs: 120_000 },
       );
       this.init = res;
+      this.lastError = null;
       this.ready.resolve();
       this.log.info({ epoch: this.epoch, agent: res.agentInfo }, "agent initialized");
     } catch (err) {
@@ -185,6 +191,13 @@ export class AcpGateway {
 
   private async onAgentExit(proc: AgentProcess, exit: { code: number | null; signal: string | null }): Promise<void> {
     if (this.agent !== proc) return;
+    if (!this.init && !this.stopping) {
+      // Died before `initialize` completed: remember why, and fail waiting callers fast.
+      this.lastError = classifyAgentFailure(proc.stderrTail?.() ?? "", exit);
+      this.log.error({ exit, failure: this.lastError }, "agent failed to start");
+      this.failedStart.resolve();
+      this.failedStart = deferred<void>();
+    }
     this.log.warn({ exit, epoch: this.epoch }, "agent process exited");
     this.down = null;
     this.init = null;
@@ -403,14 +416,20 @@ export class AcpGateway {
     });
   }
 
+  private failedStart = deferred<void>();
+
   private async waitReady(timeoutMs = 120_000): Promise<void> {
     if (this.isReady) return;
-    await Promise.race([
-      this.ready.promise,
-      sleep(timeoutMs).then(() => {
-        throw new JsonRpcError(RPC_ERRORS.internalError, "agent not ready");
-      }),
-    ]);
+    const unavailable = () => new JsonRpcError(GATEWAY_ERRORS.agentUnavailable, this.lastError!.message, { reason: this.lastError!.code });
+    // Credentials don't appear by restarting: fail immediately instead of waiting out restarts.
+    if (this.lastError?.code === "agent_auth_required") throw unavailable();
+    const deadline = Date.now() + timeoutMs;
+    while (!this.isReady) {
+      const left = deadline - Date.now();
+      if (left <= 0) throw this.lastError ? unavailable() : new JsonRpcError(RPC_ERRORS.internalError, "agent not ready");
+      const outcome = await Promise.race([this.ready.promise.then(() => "ready" as const), this.failedStart.promise.then(() => "failed" as const), sleep(left).then(() => "timeout" as const)]);
+      if (outcome === "failed" && (this.lastError as AgentFailure | null)?.code === "agent_auth_required") throw unavailable();
+    }
   }
 
   private async forward(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
@@ -485,6 +504,7 @@ export class AcpGateway {
       agentPid: this.agent?.pid ?? null,
       agentInfo: this.init?.agentInfo ?? null,
       ready: this.isReady,
+      lastError: this.lastError,
       restarts: this.restarts,
       startedAt: this.startedAt,
       sessions: [...this.sessions.values()].map((s) => ({

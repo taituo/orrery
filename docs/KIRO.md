@@ -34,6 +34,20 @@ Pick the engine per bot (`primary.engine`):
 | Auth | CLI's own login / `KIRO_API_KEY`, or `--auth-method=client` + `_kiro/auth/getAccessToken` | `KIRO_API_KEY` |
 | Sessions | list / load / resume / fork / close (when advertised) | `_kiro.dev/session/list`, load |
 
+## Signing in
+
+Observed with the latest release (kiro-cli 2.35.1, Linux x86_64, probed in CI): without credentials, both `kiro-cli acp --agent-engine=v3` and `kiro-cli acp` exit with code 1 before answering `initialize`. They print `error: You are not logged in, please log in with kiro-cli login`. The V3 flag itself is accepted.
+
+Orrery treats this as a configuration error, not a crash to retry:
+
+- The gateway records it as `agent_auth_required` and returns it from `/readyz` and `/status`.
+- Workers stop waiting for the computer as soon as they see it.
+- The turn fails at once with an `auth.required` event, which the console shows, and a non-retryable error.
+
+**Fix:** store a Kiro API key (Pro, Pro+, Pro Max or Power plan) in the computer's Kiro secret. The Kubernetes default is `orrery-kiro` with key `api-key`; for Compose, set `KIRO_API_KEY` in `.env`. Then restart the computer pod.
+
+`scripts/probe-kiro-acp.mjs` shows what a given `kiro-cli` build advertises over ACP: protocol, capabilities, extension methods and authentication methods. With `KIRO_API_KEY` set it also shows the session's modes, models and config options. CI runs it against the latest release, and opens a real session when the repository has a `KIRO_API_KEY` secret.
+
 ## Rules Orrery follows
 
 - **Never resend a prompt.** A retried worker re-attaches to the gateway and waits for the same request key. If no checkpoint exists, it adopts the running prompt from the gateway journal.

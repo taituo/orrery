@@ -45,7 +45,9 @@ export function startGatewayServer(gateway: AcpGateway, opts: GatewayServerOptio
       return;
     }
     if (url.pathname === "/readyz") {
-      res.writeHead(gateway.isReady ? 200 : 503).end(gateway.isReady ? "ready" : "starting");
+      if (gateway.isReady) res.writeHead(200).end("ready");
+      else if (gateway.lastError) res.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ ready: false, error: gateway.lastError }));
+      else res.writeHead(503).end("starting");
       return;
     }
     if (url.pathname === "/metrics") {

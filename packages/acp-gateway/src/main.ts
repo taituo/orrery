@@ -55,6 +55,7 @@ const spawn = (): AgentProcess => {
   // KIRO_CLI_PATH may be "node script.js" in dev: split a leading interpreter.
   const [command, ...prefixArgs] = launch.command.split(" ").filter(Boolean);
   let stderrHead = "";
+  let stderrTail = "";
   const startedAt = Date.now();
   const p = spawnAgent({
     command: command!,
@@ -63,6 +64,7 @@ const spawn = (): AgentProcess => {
     env: { ...launch.env, HOME: process.env.HOME ?? "/home/agent" },
     onStderr: (line) => {
       if (stderrHead.length < 4000) stderrHead += line + "\n";
+      stderrTail = (stderrTail + line + "\n").slice(-4000);
       log.info({ agent: "stderr" }, line);
     },
     onParseError: (line) => log.warn({ line: line.slice(0, 200) }, "agent wrote non-JSON to stdout"),
@@ -74,7 +76,7 @@ const spawn = (): AgentProcess => {
     }
   });
   log.info({ command, args: [...prefixArgs, ...launch.args], pid: p.child.pid, generation }, "agent spawned");
-  return { transport: p.transport, pid: p.child.pid ?? null, exited: p.exited, kill: p.kill };
+  return { transport: p.transport, pid: p.child.pid ?? null, exited: p.exited, kill: p.kill, stderrTail: () => stderrTail };
 };
 
 const tokenFile = process.env.KIRO_ACCESS_TOKEN_FILE;

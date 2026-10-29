@@ -165,7 +165,15 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
       { elicitation: Boolean(cb.onElicitation) },
     );
     const base = { protocolVersion: 1, clientCapabilities: c.clientCapabilities(), clientInfo: { name: "orrery", version: "0.1.0", title: "Orrery" } };
-    const init = await c.initialize(deps.adapter.initializeRequest(base));
+    const init = await c.initialize(deps.adapter.initializeRequest(base)).catch(async (err: unknown) => {
+      if (err instanceof JsonRpcError && err.code === GATEWAY_ERRORS.agentUnavailable) {
+        // The agent can't start on that computer (e.g. Kiro not signed in): say so plainly.
+        const auth = (err.data as { reason?: string } | undefined)?.reason === "agent_auth_required";
+        if (auth) await cb.onEvent({ type: "auth.required", kind: "agent_login", message: err.message });
+        throw new OrreryError("provider_unavailable", err.message, { retryable: !auth, cause: err, details: { reason: (err.data as { reason?: string } | undefined)?.reason } });
+      }
+      throw err;
+    });
     deps.adapter.onInitialized(init);
     return c;
   };

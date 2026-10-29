@@ -31,7 +31,31 @@ export const GATEWAY_ERRORS = {
   agentRestarted: -32098,
   /** No prompt result is known for this request key (gateway restarted or result expired). */
   unknownRequestKey: -32097,
+  /** The agent cannot start (e.g. kiro-cli is not signed in). `data.reason` = AgentFailure code. */
+  agentUnavailable: -32096,
 } as const;
+
+/** Why the agent process failed to start, derived from its exit and stderr. */
+export interface AgentFailure {
+  code: "agent_auth_required" | "agent_start_failed";
+  message: string;
+  at: string;
+}
+
+/** Classify an agent that exited before completing `initialize`. */
+export function classifyAgentFailure(stderr: string, exit: { code: number | null; signal: string | null }): AgentFailure {
+  const lines = stderr.trim().split("\n").filter(Boolean);
+  const last = lines.slice(-3).join(" ").slice(0, 500);
+  const at = new Date().toISOString();
+  if (/not logged in|kiro-cli login|log ?in required|authentication required|unauthori[sz]ed|invalid (api )?key|expired (token|credentials)/i.test(stderr)) {
+    return {
+      code: "agent_auth_required",
+      message: `Kiro is not signed in on this computer (${last || "authentication required"}). Provide a Kiro API key (KIRO_API_KEY, Pro/Pro+/Pro Max/Power plans) or use the client auth method.`,
+      at,
+    };
+  }
+  return { code: "agent_start_failed", message: `agent exited during startup (code ${exit.code ?? "–"}${exit.signal ? `, ${exit.signal}` : ""})${last ? `: ${last}` : ""}`, at };
+}
 
 export interface AttachParams {
   sessionId: string;
@@ -73,6 +97,8 @@ export interface GatewayStatus {
   agentPid: number | null;
   agentInfo: unknown;
   ready: boolean;
+  /** Last startup failure of the agent process (cleared once it initializes). */
+  lastError: AgentFailure | null;
   restarts: number;
   startedAt: string;
   sessions: Array<{ sessionId: string; lastSeq: number; owned: boolean; pendingPrompt: string | null; pendingAgentRequests: number }>;

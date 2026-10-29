@@ -76,14 +76,17 @@ jobs:
     name: kiro-cli install + ACP probe
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Optional repository secret: with it the probe also opens a real session (modes, models).
+      KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
     steps:
       - uses: actions/checkout@v5
       - name: install kiro-cli the way the computer image does
         run: |
           set +e
-          docker run --rm -v "$PWD/deploy/docker:/s:ro" -v "$PWD/scripts:/scripts:ro" node:22-bookworm-slim bash -c \
+          docker run --rm -e KIRO_API_KEY -v "$PWD/deploy/docker:/s:ro" -v "$PWD/scripts:/scripts:ro" node:22-bookworm-slim bash -c \
             'apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates >/dev/null && bash /s/install-kiro-cli.sh \
-             && echo "--- ACP probe (no credentials) ---" && node /scripts/probe-kiro-acp.mjs kiro-cli both' > kiro-install.log 2>&1
+             && echo "--- ACP probe (credentials: $([ -n "$KIRO_API_KEY" ] && echo yes || echo no)) ---" && node /scripts/probe-kiro-acp.mjs kiro-cli both' > kiro-install.log 2>&1
           status=$?
           cat kiro-install.log
           msg=$(sed -n '/--- ACP probe/,$p' kiro-install.log | head -c 60000 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
@@ -159,3 +162,32 @@ jobs:
       - name: logs
         if: failure()
         run: docker compose logs --no-color --tail 300
+
+  e2e-kiro:
+    name: end-to-end with real kiro-cli (needs KIRO_API_KEY secret)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [test, kiro-install]
+    env:
+      KIRO_API_KEY: ${{ secrets.KIRO_API_KEY }}
+      ORRERY_COMPUTER_TARGET: computer
+    steps:
+      - uses: actions/checkout@v5
+        if: env.KIRO_API_KEY != ''
+      - uses: actions/setup-node@v5
+        if: env.KIRO_API_KEY != ''
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: start the stack with the real kiro-cli
+        if: env.KIRO_API_KEY != ''
+        run: docker compose up -d --build --wait --wait-timeout 420
+      - name: end-to-end turn against Kiro (V3 engine)
+        if: env.KIRO_API_KEY != ''
+        run: node scripts/e2e.mjs --api http://localhost:8090 --token dev-token --timeout 300
+      - name: logs
+        if: failure() && env.KIRO_API_KEY != ''
+        run: docker compose logs --no-color --tail 400
+      - name: skipped
+        if: env.KIRO_API_KEY == ''
+        run: echo "::notice title=e2e-kiro::Add a KIRO_API_KEY repository secret to run the end-to-end test against the real kiro-cli."

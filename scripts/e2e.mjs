@@ -78,11 +78,24 @@ try {
   const sent = await call("POST", `/v1/threads/${thread.id}/messages`, { text: prompt });
   log("message", sent.messageId, "delivery:", sent.delivery);
 
-  const approval = await until("approval request", async () => (await call("GET", `/v1/approvals?botId=${bot.id}`)).approvals[0], 1000);
-  const allow = approval.options.find((o) => o.kind === "allow_once");
-  if (!allow) throw new Error(`agent offered no allow_once option: ${JSON.stringify(approval.options)}`);
-  log("approval", approval.id, "→", allow.name, `(${approval.title})`);
-  await call("POST", `/v1/approvals/${approval.id}/decide`, { optionId: allow.optionId, note: "e2e" });
+  // The mock always asks for permission; a real agent may run a harmless command without asking.
+  const first = await until("approval request or turn end", async () => {
+    const a = (await call("GET", `/v1/approvals?botId=${bot.id}`)).approvals[0];
+    if (a) return { approval: a };
+    const r = (await call("GET", `/v1/threads/${thread.id}/runs`)).runs[0];
+    return r && !["queued", "running", "waiting_approval"].includes(r.status) ? { done: true } : undefined;
+  });
+  if (first.approval) {
+    const approval = first.approval;
+    const allow = approval.options.find((o) => o.kind === "allow_once") ?? approval.options.find((o) => o.kind === "allow_always");
+    if (!allow) throw new Error(`agent offered no allow option: ${JSON.stringify(approval.options)}`);
+    log("approval", approval.id, "→", allow.name, `(${approval.title})`);
+    await call("POST", `/v1/approvals/${approval.id}/decide`, { optionId: allow.optionId, note: "e2e" });
+  } else if (MOCK) {
+    throw new Error("the mock agent finished without asking for permission");
+  } else {
+    log("agent ran the command without asking for permission");
+  }
 
   const run = await until("turn to finish", async () => {
     const { runs } = await call("GET", `/v1/threads/${thread.id}/runs`);
@@ -100,7 +113,7 @@ try {
 
   const { events } = await call("GET", `/v1/runs/${run.id}/events`);
   const types = new Set(events.map((e) => e.event.type));
-  for (const t of ["turn.started", "tool.call", "approval.requested", "approval.resolved", "turn.completed"]) if (!types.has(t)) throw new Error(`missing ${t} event`);
+  for (const t of ["turn.started", "tool.call", "turn.completed", ...(MOCK ? ["approval.requested", "approval.resolved"] : [])]) if (!types.has(t)) throw new Error(`missing ${t} event`);
   log(`events ok (${events.length}): ${[...types].join(", ")}`);
 
   // Second turn on the same thread: the agent session is resumed, not recreated.

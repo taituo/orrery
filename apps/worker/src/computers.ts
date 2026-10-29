@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import * as k8s from "@kubernetes/client-node";
 import { GATEWAY_TOKEN_AUDIENCE, spawnAgent, KiroV3Adapter, KiroV2Adapter, StandardAcpAdapter } from "@orrery/acp";
 import { AcpGateway, startGatewayServer, type AgentProcess } from "@orrery/acp-gateway";
-import { OrreryError, signToken, sleep, type Bot, type Env } from "@orrery/core";
+import { OrreryError, isOrreryError, signToken, sleep, type Bot, type Env } from "@orrery/core";
 import { computers, type ComputerRow, type Db } from "@orrery/db";
 import type { Logger } from "pino";
 
@@ -57,15 +57,27 @@ export function gatewayToken(env: Pick<Env, "GATEWAY_TOKEN_SECRET">, computerId:
   return signToken({ sub: computerId, aud: GATEWAY_TOKEN_AUDIENCE, exp: Math.floor(Date.now() / 1000) + ttlSec }, env.GATEWAY_TOKEN_SECRET);
 }
 
-async function waitReady(httpBase: string, timeoutMs: number): Promise<void> {
+async function waitReady(httpBase: string | (() => Promise<string | null>), timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = "";
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`${httpBase}/readyz`, { signal: AbortSignal.timeout(3000) });
-      if (r.ok) return;
-      last = `HTTP ${r.status}`;
+      const base = typeof httpBase === "string" ? httpBase : await httpBase();
+      if (base) {
+        const r = await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(3000) });
+        if (r.ok) return;
+        const body = await r.text();
+        last = `HTTP ${r.status} ${body.slice(0, 300)}`;
+        try {
+          const j = JSON.parse(body) as { error?: { code?: string; message?: string } };
+          // Missing credentials won't fix themselves: stop waiting and say what to do.
+          if (j.error?.code === "agent_auth_required") throw new OrreryError("provider_unavailable", j.error.message ?? "Kiro is not signed in", { retryable: false, details: { reason: j.error.code } });
+        } catch (err) {
+          if (isOrreryError(err)) throw err;
+        }
+      } else last = "pod has no IP yet";
     } catch (err) {
+      if (isOrreryError(err)) throw err;
       last = err instanceof Error ? err.message : String(err);
     }
     await sleep(1000);
@@ -295,7 +307,6 @@ export class KubernetesComputerProvider implements ComputerProvider {
     const { objects, specHash, name } = computerManifests(bot, this.env, this.opts);
     const ns = this.env.COMPUTER_NAMESPACE;
     const handle: ComputerHandle = { computerId: id, endpoint: `ws://${name}.${ns}.svc:7777/acp`, agentKind: agentKindFor(bot), cwd: "/home/agent/workspace" };
-    const httpBase = `http://${name}.${ns}.svc:7777`;
 
     const row = await computers.get(this.db, id);
     if (row?.status === "running" && row.specHash === specHash) {
@@ -332,7 +343,14 @@ export class KubernetesComputerProvider implements ComputerProvider {
     for (const obj of objects) {
       await this.api.patch(obj, undefined, undefined, "orrery-computer-manager", true, k8s.PatchStrategy.ServerSideApply);
     }
-    await waitReady(httpBase, 180_000);
+    // Poll the pod directly: its Service has no endpoints until it is ready.
+    await waitReady(async () => {
+      const pod = await this.core.readNamespacedPod({ name, namespace: ns }).catch(() => null);
+      return pod?.status?.podIP ? `http://${pod.status.podIP}:7777` : null;
+    }, 180_000).catch((err: unknown) => {
+      void computers.setStatus(this.db, id, "failed").catch(() => undefined);
+      throw err;
+    });
     await computers.upsert(this.db, { id, teamId: bot.teamId, botId: bot.id, shared: false, status: "running", endpoint: handle.endpoint, agentKind: handle.agentKind, image: bot.computer.image ?? this.env.COMPUTER_IMAGE, specHash });
     this.log.info({ computer: id }, "bot computer ready");
     return handle;
