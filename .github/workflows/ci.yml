@@ -151,7 +151,11 @@ jobs:
           node-version: 22
           package-manager-cache: false
       - name: start the stack
-        run: docker compose up -d --build --wait --wait-timeout 300
+        run: |
+          set -o pipefail
+          docker compose up -d --build --wait --wait-timeout 300 2>&1 | tee compose-up.txt || {
+            msg=$(tail -c 8000 compose-up.txt | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=compose up::$msg"; exit 1; }
       - name: end-to-end turn, approval, session reuse, worker crash and resume
         run: >
           node scripts/e2e.mjs --api http://localhost:8090 --token dev-token --mock --timeout 240
@@ -161,7 +165,14 @@ jobs:
         run: curl -fsS http://localhost:8080/ | grep -q '<div id="root">'
       - name: logs
         if: failure()
-        run: docker compose logs --no-color --tail 300
+        run: |
+          docker compose ps -a > compose-ps.txt 2>&1 || true
+          docker compose logs --no-color --tail 120 > compose-logs.txt 2>&1 || true
+          cat compose-ps.txt compose-logs.txt
+          for f in compose-ps.txt compose-logs.txt; do
+            msg=$(tail -c 12000 "$f" | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=$f::$msg"
+          done
 
   e2e-kiro:
     name: end-to-end with real kiro-cli (needs KIRO_API_KEY secret)
