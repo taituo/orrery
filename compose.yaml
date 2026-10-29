@@ -53,6 +53,8 @@ services:
 
   temporal:
     image: temporalio/temporal:latest
+    # The image runs as an unprivileged user; the named volume is root-owned.
+    user: "0:0"
     entrypoint: ["temporal"]
     command: ["server", "start-dev", "--ip", "0.0.0.0", "--namespace", "orrery", "--db-filename", "/data/temporal.db"]
     volumes: [temporal:/data]
