@@ -1,0 +1,61 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $ns := include "orrery.computerNamespace" . }}
+# API: reachable from the ingress controller, from bot computers (platform MCP) and in-namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orrery.fullname" . }}-api
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" . "component" "api") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 14 }}
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ $ns }} }
+        - podSelector: {}
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orrery.fullname" . }}-web
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" . "component" "web") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 14 }}
+        - podSelector: {}
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+# Workers accept no inbound traffic except health checks and metrics scraping.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orrery.fullname" . }}-worker
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { orrery.dev/role: worker }
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: 8081, protocol: TCP }
+        - { port: 9464, protocol: TCP }
+{{- end }}

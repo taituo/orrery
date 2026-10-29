@@ -1,0 +1,114 @@
+# Local Orrery stack: Postgres + pgvector, Temporal dev server, API, workers, one shared bot
+# computer and the console.
+#
+#   cp .env.example .env            # add KIRO_API_KEY (or use the mock agent, below)
+#   docker compose up --build
+#   open http://localhost:8080      # sign in with ORRERY_DEV_TOKEN (default: dev-token)
+#
+# No Kiro account? Run against the wire-faithful mock Kiro CLI:
+#   ORRERY_COMPUTER_TARGET=computer-mock docker compose up --build
+name: orrery
+
+x-build: &build
+  context: .
+  dockerfile: deploy/docker/Dockerfile
+
+x-env: &env
+  NODE_ENV: development
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  DATABASE_URL: postgres://orrery:orrery@postgres:5432/orrery
+  TEMPORAL_ADDRESS: temporal:7233
+  TEMPORAL_NAMESPACE: orrery
+  PUBLIC_BASE_URL: http://localhost:8080
+  WEB_ORIGINS: http://localhost:8080,http://localhost:5173
+  INTERNAL_API_URL: http://api:8080
+  DEV_AUTH_TOKEN: ${ORRERY_DEV_TOKEN:-dev-token}
+  MCP_TOKEN_SECRET: ${MCP_TOKEN_SECRET:-local-mcp-token-secret-0123456789}
+  GATEWAY_TOKEN_SECRET: ${GATEWAY_TOKEN_SECRET:-local-gateway-secret-0123456789}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:-bG9jYWwtZGV2LWVuY3J5cHRpb24ta2V5LTMyYnl0ZXM=}
+  PROVIDERS_FILE: /etc/orrery/providers.yaml
+  MIGRATE_ON_START: "true"
+  LANGFUSE_BASE_URL: ${LANGFUSE_BASE_URL:-}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  EMBED_PROVIDER_ID: ${EMBED_PROVIDER_ID:-}
+  FAST_PROVIDER_ID: ${FAST_PROVIDER_ID:-}
+  CLEF_PROVIDER_ID: ${CLEF_PROVIDER_ID:-}
+  CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}
+  CF_API_TOKEN: ${CF_API_TOKEN:-}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: orrery
+      POSTGRES_PASSWORD: orrery
+      POSTGRES_DB: orrery
+    volumes: [postgres:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "orrery", "-d", "orrery"]
+      interval: 3s
+      retries: 30
+
+  temporal:
+    image: temporalio/temporal:latest
+    entrypoint: ["temporal"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--namespace", "orrery", "--db-filename", "/data/temporal.db"]
+    volumes: [temporal:/data]
+    ports: ["127.0.0.1:7233:7233", "127.0.0.1:8233:8233"]   # 8233: Temporal UI
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 3s
+      retries: 40
+
+  api:
+    build: { <<: *build, target: api }
+    environment: *env
+    volumes: ["./deploy/compose/providers.yaml:/etc/orrery/providers.yaml:ro"]
+    ports: ["127.0.0.1:8090:8080"]
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+
+  worker:
+    build: { <<: *build, target: worker }
+    environment:
+      <<: *env
+      WORKER_QUEUES: agent,acp,memory
+      COMPUTER_PROVIDER: static
+      COMPUTER_STATIC_URL: ws://computer:7777/acp
+    volumes: ["./deploy/compose/providers.yaml:/etc/orrery/providers.yaml:ro"]
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+      computer: { condition: service_healthy }
+
+  # One shared bot computer (all bots use it locally; Kubernetes gives each bot its own pod).
+  computer:
+    build: { <<: *build, target: "${ORRERY_COMPUTER_TARGET:-computer}" }
+    environment:
+      COMPUTER_ID: cmp_static
+      GATEWAY_TOKEN_SECRET: ${GATEWAY_TOKEN_SECRET:-local-gateway-secret-0123456789}
+      AGENT_KIND: ${ORRERY_AGENT_KIND:-kiro-v3}
+      KIRO_API_KEY: ${KIRO_API_KEY:-}
+    volumes: [computer-home:/home/agent]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7777/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 3s
+      retries: 40
+
+  web:
+    build: { <<: *build, target: web }
+    environment:
+      API_UPSTREAM: http://api:8080
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: [api]
+
+volumes:
+  postgres:
+  temporal:
+  computer-home:

@@ -214,6 +214,58 @@ describe("ACP gateway", () => {
     expect(text).toBe("You said: start. Ran `make deploy`. You said: end. ");
   });
 
+  it("replays output produced while the worker was dead — from a checkpoint, or by adopting the running prompt", async () => {
+    for (const mode of ["checkpoint", "adopt"] as const) {
+      const h = await startHarness();
+      const r1 = recorder();
+      let t1: MessageTransport | null = null;
+      const prompt = [{ type: "text" as const, text: "before\nsleep: 300\nafter" }];
+      const a = runAcpTurn(
+        {
+          connect: async () => {
+            if (t1) throw new Error("worker is dead");
+            t1 = await connectWebSocket({ url: h.url, token: token() });
+            return t1;
+          },
+          adapter: new KiroV3Adapter(),
+          viaGateway: true,
+          maxReconnects: 0,
+        },
+        { requestKey: `run_${mode}`, messageId: "m", session, prompt },
+        { ...r1, decidePermission: allowOnce },
+        new AbortController().signal,
+      );
+      for (let i = 0; i < 100 && !foldTranscript(r1.events).assistantText.includes("before"); i++) await new Promise((res) => setTimeout(res, 10));
+      const checkpoint = r1.progress!;
+      t1!.close("worker crashed");
+      await expect(a).rejects.toMatchObject({ code: "interrupted" });
+      await new Promise((res) => setTimeout(res, 450)); // the agent finishes while nobody is attached
+
+      const r2 = recorder();
+      const res = await runAcpTurn(
+        { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true },
+        mode === "checkpoint"
+          ? { requestKey: `run_${mode}`, messageId: "m", session, prompt, resume: { sessionId: checkpoint.sessionId!, afterSeq: checkpoint.lastSeq, agentEpoch: checkpoint.agentEpoch, promptSent: true } }
+          : // no checkpoint reached Temporal: only the session id is known
+            { requestKey: `run_${mode}`, messageId: "m", sessionId: checkpoint.sessionId!, session, prompt },
+        { ...r2, decidePermission: allowOnce },
+        new AbortController().signal,
+      );
+      expect(res.stopReason).toBe("end_turn");
+      expect(h.prompts()).toBe(1);
+      if (mode === "checkpoint") {
+        expect(foldTranscript([...r1.events, ...r2.events]).assistantText).toBe("You said: before. You said: after. ");
+      } else {
+        // adopted from the prompt's start: the new attempt sees the whole turn exactly once
+        expect(foldTranscript(r2.events).assistantText).toBe("You said: before. You said: after. ");
+        expect(r2.events.filter((e) => e.type === "turn.started")).toEqual([]);
+      }
+      current!.server.close();
+      await current!.gateway.stop();
+      current = null;
+    }
+  });
+
   it("reports interruption (and does not resend) when the agent process restarts mid-turn", async () => {
     const h = await startHarness();
     const r = recorder();

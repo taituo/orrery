@@ -5,3 +5,4 @@ export { handleMcp, type McpDeps } from "./mcp.js";
 export { OpenApiRegistry, type RouteDoc } from "./openapi.js";
 export { RecordingWorkflowGateway, TemporalWorkflowGateway, type WorkflowGateway } from "./workflow-gateway.js";
 export { createNodeServer } from "./server.js";
+export { Delivery } from "./delivery.js";

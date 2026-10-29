@@ -80,8 +80,16 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
       if (!bot || !thread || !stored) throw ApplicationFailure.create({ type: "not_found", message: "bot, thread or run input missing", nonRetryable: true });
       if (p.binding.kind === "openai") throw ApplicationFailure.create({ type: "bad_request", message: "runAcpTurn needs an ACP binding", nonRetryable: true });
 
-      const previous = ctx.info.heartbeatDetails as AcpHeartbeat | undefined;
-      const resumable = previous?.promptSent && previous.computerId === input.computer.computerId && previous.sessionId;
+      // Resume point. The cursor persisted atomically with the run's events is exact: replay
+      // continues right after the last persisted event. Heartbeat details (throttled by the SDK,
+      // not tied to persistence) only contribute the session id; if the prompt was already sent
+      // but nothing was persisted yet, the gateway reports it and the turn is adopted and
+      // replayed from its start — never re-prompted.
+      const fromDb = await runs.getAcpCursor<AcpHeartbeat>(db, p.runId);
+      const fromBeat = ctx.info.heartbeatDetails as AcpHeartbeat | undefined;
+      const sameComputer = (c: AcpHeartbeat | null | undefined): c is AcpHeartbeat => Boolean(c && c.computerId === input.computer.computerId && c.sessionId);
+      const previous = sameComputer(fromDb) ? fromDb : sameComputer(fromBeat) ? { ...fromBeat, promptSent: false, lastSeq: -1 } : undefined;
+      const resumable = previous?.promptSent && previous.sessionId;
       const tracer = new TurnTracer({
         runId: p.runId,
         botId: bot.id,
@@ -95,7 +103,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
         channel: thread.channel,
         traceId: stored.traceId,
       });
-      const sink = await RunEventSink.open(db, { runId: p.runId, teamId: p.teamId, botId: p.botId, threadId: p.threadId }, tracer);
+      const sink = await RunEventSink.open(db, { runId: p.runId, teamId: p.teamId, botId: p.botId, threadId: p.threadId }, tracer, 60, () => progress);
       let usage: UsageSnapshot = {};
       let model: string | null = p.binding.kind === "kiro-acp" ? (p.binding.modelId ?? null) : null;
       const onEvent = (e: AgentEvent) => {
@@ -111,7 +119,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
 
       // Heartbeat continuously (liveness while waiting on humans) with resume details.
       let progress: AcpHeartbeat = {
-        sessionId: (resumable ? previous!.sessionId : thread.acpSessionId) ?? null,
+        sessionId: (previous?.sessionId ?? thread.acpSessionId) ?? null,
         lastSeq: resumable ? previous!.lastSeq : -1,
         agentEpoch: resumable ? previous!.agentEpoch : null,
         promptSent: Boolean(resumable),

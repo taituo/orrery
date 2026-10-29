@@ -1,0 +1,66 @@
+{{- if and (eq .Values.config.environment "production") .Values.config.devAuthToken }}
+{{- fail "config.devAuthToken must not be set when config.environment is production" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "orrery.configName" . }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ ternary "production" "development" (eq .Values.config.environment "production") | quote }}
+  DEPLOYMENT_ENV: {{ .Values.config.environment | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  DATABASE_SSL: {{ .Values.config.database.ssl | quote }}
+  DATABASE_POOL_MAX: {{ .Values.config.database.poolMax | quote }}
+  ORRERY_VECTOR_DIMS: {{ .Values.config.database.vectorDims | quote }}
+  TEMPORAL_ADDRESS: {{ .Values.config.temporal.address | quote }}
+  TEMPORAL_NAMESPACE: {{ .Values.config.temporal.namespace | quote }}
+  TEMPORAL_TASK_QUEUE_PREFIX: {{ .Values.config.temporal.taskQueuePrefix | quote }}
+  PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
+  WEB_ORIGINS: {{ join "," (prepend .Values.config.webOrigins .Values.config.publicBaseUrl) | quote }}
+  INTERNAL_API_URL: {{ printf "http://%s.%s.svc:8080" (include "orrery.apiService" .) .Release.Namespace | quote }}
+  {{- with .Values.config.langfuse.baseUrl }}
+  LANGFUSE_BASE_URL: {{ . | quote }}
+  {{- end }}
+  {{- with (default .Values.config.langfuse.baseUrl .Values.config.langfuse.uiUrl) }}
+  LANGFUSE_UI_URL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.otel.endpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.issuer }}
+  OIDC_ISSUER: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.audience }}
+  OIDC_AUDIENCE: {{ . | quote }}
+  {{- end }}
+  OIDC_TEAM_CLAIM: {{ .Values.config.oidc.teamClaim | quote }}
+  OIDC_ROLE_CLAIM: {{ .Values.config.oidc.roleClaim | quote }}
+  PROVIDERS_FILE: /etc/orrery/config/providers.yaml
+  MIGRATE_ON_START: {{ .Values.migrations.onStart | quote }}
+  {{- with .Values.config.embedProviderId }}
+  EMBED_PROVIDER_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.fastProviderId }}
+  FAST_PROVIDER_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.clefProviderId }}
+  CLEF_PROVIDER_ID: {{ . | quote }}
+  {{- end }}
+  COMPUTER_PROVIDER: {{ .Values.computers.provider | quote }}
+  COMPUTER_NAMESPACE: {{ include "orrery.computerNamespace" . | quote }}
+  COMPUTER_IMAGE: {{ include "orrery.image" (dict "ctx" . "name" "computer") | quote }}
+  COMPUTER_KIRO_SECRET: {{ default (printf "%s-kiro" (include "orrery.fullname" .)) .Values.computers.kiro.existingSecret | quote }}
+  COMPUTER_CILIUM: {{ .Values.computers.cilium | quote }}
+  {{- with .Values.computers.runtimeClassName }}
+  COMPUTER_RUNTIME_CLASS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.computers.storageClassName }}
+  COMPUTER_STORAGE_CLASS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.computers.staticUrl }}
+  COMPUTER_STATIC_URL: {{ . | quote }}
+  {{- end }}
+  providers.yaml: |
+    {{- toYaml (default (list) .Values.config.providers) | nindent 4 }}

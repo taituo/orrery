@@ -1,0 +1,13 @@
+apiVersion: v2
+name: orrery
+description: Durable, self-hosted AI teammates on Temporal with Kiro over ACP, Langfuse observability and Kubernetes bot computers.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/taituo/orrery
+sources:
+  - https://github.com/taituo/orrery
+keywords: [ai, agents, temporal, kiro, acp, langfuse, mcp]
+maintainers:
+  - name: Orrery maintainers

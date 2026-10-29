@@ -1,0 +1,54 @@
+{{- /* Fresh installs migrate on start (advisory-locked); upgrades migrate before new pods roll out. */}}
+{{- if and .Values.migrations.enabled (not .Release.IsInstall) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "orrery.fullname" . }}-migrate-{{ .Release.Revision }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "orrery.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.postgresql.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgresql.image }}
+          command: ["sh", "-c", "until pg_isready -h {{ include "orrery.fullname" . }}-postgresql -p 5432; do sleep 2; done"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "orrery.image" (dict "ctx" . "name" "api") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "dist/migrate.js", "migrate"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            {{- include "orrery.envFrom" . | nindent 12 }}
+          env:
+            {{- include "orrery.commonEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "orrery.commonMounts" . | nindent 12 }}
+      volumes:
+        {{- include "orrery.commonVolumes" . | nindent 8 }}
+{{- end }}

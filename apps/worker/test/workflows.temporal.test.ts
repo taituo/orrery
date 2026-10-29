@@ -14,21 +14,38 @@ import {
   type MemoryActivities,
   type PreparedTurn,
 } from "@orrery/workflows";
+import { accessSync, constants } from "node:fs";
+import path from "node:path";
 import { bundleWorkflows } from "../src/workflow-bundle.js";
 
+function findOnPath(bin: string): string | undefined {
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    const p = path.join(dir, bin);
+    try {
+      accessSync(p, constants.X_OK);
+      return p;
+    } catch {
+      /* next */
+    }
+  }
+  return undefined;
+}
+
 /**
- * End-to-end workflow tests against Temporal's local test server with mocked activities.
- * Requires downloading the Temporal dev server (CI has network access). Locally, set
- * TEMPORAL_TEST=1 to run; otherwise the suite is skipped when the server can't start.
+ * End-to-end workflow tests against Temporal's local dev server with mocked activities.
+ * Uses TEMPORAL_CLI_PATH (or a `temporal` binary on PATH) when present, otherwise the SDK
+ * downloads the dev server. TEMPORAL_TEST=0 skips; TEMPORAL_TEST=1 makes a failed start fatal.
  */
 let env: TestWorkflowEnvironment | null = null;
 let skipReason = "";
 
 beforeAll(async () => {
   try {
-    env = await TestWorkflowEnvironment.createLocal();
+    const cli = process.env.TEMPORAL_CLI_PATH ?? findOnPath("temporal");
+    env = await TestWorkflowEnvironment.createLocal(cli ? { server: { executable: { type: "existing-path", path: cli } } } : undefined);
   } catch (err) {
     skipReason = err instanceof Error ? err.message : String(err);
+    if (process.env.TEMPORAL_TEST === "1") throw err;
   }
 }, 120_000);
 

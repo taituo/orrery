@@ -1,0 +1,34 @@
+# Self-contained trial on a local cluster (kind, k3d, minikube, Docker Desktop):
+#   helm install orrery deploy/helm/orrery -n orrery --create-namespace -f deploy/helm/orrery/values-dev.yaml \
+#     --set computers.kiro.apiKey=$KIRO_API_KEY
+# Temporal: run the official chart or `temporal server start-dev` and point config.temporal.address at it.
+config:
+  environment: dev
+  publicBaseUrl: http://orrery.localtest.me
+  devAuthToken: dev-token-change-me
+  database:
+    ssl: false
+  temporal:
+    address: temporal-frontend.temporal.svc:7233
+    namespace: default
+postgresql:
+  enabled: true
+api:
+  replicas: 1
+  autoscaling: { enabled: false }
+  podDisruptionBudget: null
+worker:
+  roles:
+    agent: { queues: agent, replicas: 1, resources: { requests: { cpu: 100m, memory: 256Mi } }, env: {} }
+    acp: { queues: acp, replicas: 1, resources: { requests: { cpu: 100m, memory: 256Mi } }, env: {} }
+    memory: { queues: memory, replicas: 1, resources: { requests: { cpu: 100m, memory: 256Mi } }, env: {} }
+web:
+  replicas: 1
+  podDisruptionBudget: null
+ingress:
+  host: orrery.localtest.me
+  tls: { enabled: false }
+networkPolicy:
+  enabled: false
+computers:
+  networkPolicy: { enabled: false }

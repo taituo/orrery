@@ -32,7 +32,7 @@
     "zod": "^4.1.0"
   },
   "scripts": {
-    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js"
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js && node ../../scripts/bundle.mjs ../../packages/db/src/cli.ts dist/migrate.js && node -e \"require('fs').cpSync('../../packages/db/migrations','dist/migrations',{recursive:true})\""
   },
   "devDependencies": {
     "@orrery/testkit": "workspace:*"

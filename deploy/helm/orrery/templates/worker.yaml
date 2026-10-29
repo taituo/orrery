@@ -1,0 +1,169 @@
+{{- $fullname := include "orrery.fullname" . }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-worker
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- range $role, $spec := .Values.worker.roles }}
+{{- $component := printf "worker-%s" $role }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "orrery.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+    orrery.dev/role: worker
+spec:
+  {{- if not (or $.Values.worker.autoscaling.enabled $.Values.worker.keda.enabled) }}
+  replicas: {{ $spec.replicas }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" $ "component" $component) | nindent 6 }}
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels:
+        {{- include "orrery.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+        orrery.dev/role: worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") $ | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        {{- with $.Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $fullname }}-worker
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      # Running turns are durable: on shutdown the worker stops polling, in-flight ACP
+      # activities stop heartbeating and resume on another worker through the gateway.
+      terminationGracePeriodSeconds: {{ $.Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          image: {{ include "orrery.image" (dict "ctx" $ "name" "worker") }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - { name: health, containerPort: 8081 }
+            - { name: metrics, containerPort: 9464 }
+          envFrom:
+            {{- include "orrery.envFrom" $ | nindent 12 }}
+          env:
+            - { name: WORKER_QUEUES, value: {{ $spec.queues | quote }} }
+            - { name: HEALTH_PORT, value: "8081" }
+            - { name: METRICS_PORT, value: "9464" }
+            {{- range $k, $v := $spec.env }}
+            - { name: {{ $k }}, value: {{ $v | quote }} }
+            {{- end }}
+            {{- include "orrery.commonEnv" $ | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: health }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 15
+            failureThreshold: 4
+          startupProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 2
+            failureThreshold: 90
+          resources:
+            {{- toYaml $spec.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "orrery.commonMounts" $ | nindent 12 }}
+            {{- if eq $.Values.computers.provider "local" }}
+            - { name: workspaces, mountPath: /tmp/orrery-workspaces }
+            {{- end }}
+      volumes:
+        {{- include "orrery.commonVolumes" $ | nindent 8 }}
+        {{- if eq $.Values.computers.provider "local" }}
+        - name: workspaces
+          emptyDir: {}
+        {{- end }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "orrery.selector" (dict "ctx" $ "component" $component) | nindent 14 }}
+      {{- with $.Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $.Values.worker.keda.enabled }}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "orrery.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ $fullname }}-{{ $component }}
+  minReplicaCount: {{ $.Values.worker.keda.minReplicas }}
+  maxReplicaCount: {{ $.Values.worker.keda.maxReplicas }}
+  triggers:
+    - type: temporal
+      metadata:
+        endpoint: {{ $.Values.config.temporal.address | quote }}
+        namespace: {{ $.Values.config.temporal.namespace | quote }}
+        taskQueue: {{ printf "%s-%s" $.Values.config.temporal.taskQueuePrefix $spec.queues | quote }}
+        targetQueueSize: {{ $.Values.worker.keda.targetQueueSize | quote }}
+{{- else if $.Values.worker.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "orrery.labels" $ | nindent 4 }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ $fullname }}-{{ $component }} }
+  minReplicas: {{ $.Values.worker.autoscaling.minReplicas }}
+  maxReplicas: {{ $.Values.worker.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ $.Values.worker.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "orrery.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml $.Values.worker.podDisruptionBudget | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" $ "component" $component) | nindent 6 }}
+{{- end }}

@@ -37,6 +37,8 @@ export interface AttachParams {
   sessionId: string;
   /** -1 = take ownership without replay. */
   afterSeq: number;
+  /** Ask about this prompt (turn) — lets a retried worker discover its prompt is already running. */
+  requestKey?: string;
 }
 
 export interface AttachResult {
@@ -50,6 +52,8 @@ export interface AttachResult {
   pendingPrompt: { requestKey: string; startedAt: string } | null;
   /** Prompt results held for keys whose requester disconnected. */
   completedKeys: string[];
+  /** State of the prompt named in `requestKey` (if any): journal seq when it started, settled or not. */
+  prompt?: { requestKey: string; startSeq: number; settled: boolean } | null;
   /** Last advertised modes / models / config options for the session (from new/load + updates). */
   setup: SessionSetupSnapshot | null;
 }

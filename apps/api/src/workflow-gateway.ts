@@ -149,10 +149,13 @@ export class TemporalWorkflowGateway implements WorkflowGateway {
 /** In-memory implementation for tests and the offline prototype. */
 export class RecordingWorkflowGateway implements WorkflowGateway {
   readonly calls: Array<{ op: string; args: unknown[] }> = [];
+  /** Simulate the workflow engine being unreachable for deliveries. */
+  unavailable = false;
   private rec(op: string, ...args: unknown[]) {
     this.calls.push({ op, args });
   }
   async deliver(m: InboundMessage) {
+    if (this.unavailable) throw new Error("14 UNAVAILABLE: connect ECONNREFUSED");
     this.rec("deliver", m);
   }
   async cancelRun(runId: string) {

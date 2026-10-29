@@ -35,7 +35,7 @@
     "zod": "^4.1.0"
   },
   "scripts": {
-    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js && node ../../scripts/bundle-workflows.mjs"
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js && node ../../scripts/bundle-workflows.mjs dist/workflow-bundle.js && node -e \"require('fs').cpSync('../../packages/db/migrations','dist/migrations',{recursive:true})\""
   },
   "devDependencies": {
     "@temporalio/testing": "^1.25.0"

@@ -92,6 +92,8 @@ interface HeldRequest {
 interface PromptEntry {
   requestKey: string;
   sessionId: string;
+  /** Session journal seq when the prompt was sent (its updates have seq > startSeq). */
+  startSeq: number;
   result: Deferred<PromptResponse>;
   completedAt: number | null;
   requester: Upstream | null;
@@ -433,6 +435,7 @@ export class AcpGateway {
     for (const h of this.held.values()) if (h.sessionId === p.sessionId) this.deliverHeld(h);
     const completedKeys = [...this.prompts.values()].filter((x) => x.sessionId === p.sessionId && x.result.settled).map((x) => x.requestKey);
     for (const pr of this.prompts.values()) if (pr.sessionId === p.sessionId && !pr.result.settled) pr.requester = up;
+    const asked = p.requestKey ? this.prompts.get(p.requestKey) : undefined;
     return {
       known,
       agentEpoch: this.epoch,
@@ -441,6 +444,7 @@ export class AcpGateway {
       pendingPrompt: s.pendingPrompt,
       completedKeys,
       setup: s.setup,
+      prompt: asked && asked.sessionId === p.sessionId ? { requestKey: asked.requestKey, startSeq: asked.startSeq, settled: asked.result.settled } : null,
     };
   }
 
@@ -455,7 +459,7 @@ export class AcpGateway {
     }
     const s = this.session(sessionId);
     s.owner = up;
-    const entry: PromptEntry = { requestKey, sessionId, result: deferred<PromptResponse>(), completedAt: null, requester: up };
+    const entry: PromptEntry = { requestKey, sessionId, startSeq: s.seq, result: deferred<PromptResponse>(), completedAt: null, requester: up };
     this.prompts.set(requestKey, entry);
     s.pendingPrompt = { requestKey, startedAt: new Date().toISOString() };
     this.forward(METHODS.sessionPrompt, params)

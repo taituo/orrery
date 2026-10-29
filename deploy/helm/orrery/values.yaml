@@ -1,0 +1,256 @@
+# Orrery Helm values. External dependencies (PostgreSQL 16 + pgvector, Temporal, Langfuse)
+# are referenced, not bundled: run them with their own charts or managed services.
+# For a self-contained trial cluster see values-dev.yaml.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  registry: ghcr.io/taituo
+  # Defaults to the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+images:
+  api: orrery-api
+  worker: orrery-worker
+  web: orrery-web
+  computer: orrery-computer
+imagePullSecrets: []
+
+config:
+  environment: production
+  logLevel: info
+  # Public URL of the console/API (used for links, webhook URLs and CORS).
+  publicBaseUrl: https://orrery.example.com
+  # Extra origins allowed to call the API from browsers (the public URL is always allowed).
+  webOrigins: []
+
+  database:
+    # Either a full URL here (stored in the platform Secret) or an existing Secret below.
+    url: ""
+    existingSecret: ""
+    existingSecretKey: database-url
+    ssl: true
+    poolMax: 20
+    # Embedding column width; set before the first migration. Smaller embeddings are padded.
+    vectorDims: 1536
+
+  temporal:
+    address: temporal-frontend.temporal.svc:7233
+    namespace: orrery
+    taskQueuePrefix: orrery
+    # mTLS: an existing kubernetes.io/tls Secret (tls.crt / tls.key).
+    tlsSecret: ""
+    # Temporal Cloud API key: existing Secret name/key.
+    apiKeySecret: ""
+    apiKeySecretKey: api-key
+
+  langfuse:
+    baseUrl: ""            # e.g. https://cloud.langfuse.com or your self-hosted URL
+    uiUrl: ""              # defaults to baseUrl; used for trace links in the console
+    existingSecret: ""     # keys: public-key, secret-key
+    publicKey: ""
+    secretKey: ""
+
+  otel:
+    # Optional OTLP endpoint for traces besides Langfuse (Tempo, Jaeger, …).
+    endpoint: ""
+
+  oidc:
+    issuer: ""             # e.g. https://keycloak.example.com/realms/orrery
+    audience: ""
+    teamClaim: org_id
+    roleClaim: role
+    # Public client used by the console (authorization code + PKCE, no secret).
+    webClientId: ""
+    webScope: openid profile email offline_access
+
+  # Development only: static bearer token acting as an owner. Refused when environment=production.
+  devAuthToken: ""
+
+  # OpenAI-compatible providers and the Clef decision model (see docs/CONFIGURATION.md).
+  providers: []
+  #  - kind: openai
+  #    id: local-vllm
+  #    baseUrl: http://vllm.inference.svc:8000/v1
+  #    apiKeyEnv: VLLM_API_KEY
+  #    roles: [chat, fast, extract, summarize]
+  #    models: { chat: [qwen3-235b-a22b, qwen3-30b-a3b] }
+  #  - kind: openai
+  #    id: tei
+  #    baseUrl: http://tei.inference.svc/v1
+  #    roles: [embed, rerank]
+  #    models: { embed: bge-m3, embedDims: 1024, rerank: bge-reranker-v2-m3 }
+  #  - kind: clef
+  #    id: clef
+  #    format: workers-ai
+  #    accountIdEnv: CF_ACCOUNT_ID
+  #    apiKeyEnv: CF_API_TOKEN
+  embedProviderId: ""
+  fastProviderId: ""
+  clefProviderId: ""
+  # Secret whose keys are exposed as env vars to API and workers (provider API keys
+  # referenced by apiKeyEnv / accountIdEnv above).
+  providerSecret: ""
+
+  extraEnv: []
+
+secrets:
+  # Create the platform Secret (MCP/gateway token secrets, encryption key, DB URL, Langfuse keys).
+  # Generated values are kept across upgrades.
+  create: true
+  # Use an existing Secret instead (keys: mcp-token-secret, gateway-token-secret, encryption-key,
+  # and optionally database-url, langfuse-public-key, langfuse-secret-key, dev-auth-token).
+  existingSecret: ""
+
+serviceAccount:
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+api:
+  replicas: 2
+  resources:
+    requests: { cpu: 200m, memory: 384Mi }
+    limits: { memory: 1Gi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    minAvailable: 1
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  # One Deployment per role so each scales on its own queue.
+  roles:
+    agent:
+      queues: agent
+      replicas: 2
+      resources:
+        requests: { cpu: 250m, memory: 512Mi }
+        limits: { memory: 1536Mi }
+      env: {}
+    acp:
+      # Long-running ACP turns (one activity per live turn); scale on concurrent turns.
+      queues: acp
+      replicas: 2
+      resources:
+        requests: { cpu: 250m, memory: 512Mi }
+        limits: { memory: 2Gi }
+      env:
+        ACP_ACTIVITY_CONCURRENCY: "200"
+    memory:
+      queues: memory
+      replicas: 1
+      resources:
+        requests: { cpu: 200m, memory: 512Mi }
+        limits: { memory: 2Gi }
+      env: {}
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  # KEDA Temporal scaler (task-queue backlog). Requires KEDA >= 2.17.
+  keda:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 20
+    targetQueueSize: 5
+  podDisruptionBudget:
+    maxUnavailable: 1
+  terminationGracePeriodSeconds: 120
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+web:
+  replicas: 2
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+  podDisruptionBudget:
+    minAvailable: 1
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+ingress:
+  enabled: true
+  className: ""
+  annotations: {}
+  host: orrery.example.com
+  tls:
+    enabled: true
+    secretName: orrery-tls
+
+migrations:
+  # Run database migrations as a Helm pre-upgrade hook Job.
+  enabled: true
+  # Also migrate when API/worker pods start (idempotent, advisory-locked); covers fresh installs.
+  onStart: true
+  backoffLimit: 3
+
+computers:
+  # kubernetes: one pod per bot (recommended). local: agent processes inside the ACP workers
+  # (single-node trials only). static: all bots share a gateway at staticUrl.
+  provider: kubernetes
+  namespace: orrery-computers
+  createNamespace: true
+  # Sandbox runtime for agent pods, e.g. gvisor ("runsc") or kata.
+  runtimeClassName: ""
+  storageClassName: ""
+  # Per-bot FQDN egress allowlists via CiliumNetworkPolicy (requires Cilium).
+  cilium: false
+  staticUrl: ""
+  kiro:
+    # Secret in the computers namespace with key api-key (Kiro API key for headless auth).
+    existingSecret: ""
+    apiKey: ""
+  networkPolicy:
+    enabled: true
+    # Egress for "restricted" bots when Cilium is off: HTTPS to public addresses only.
+    blockPrivateRanges: true
+  resourceQuota:
+    enabled: false
+    hard:
+      requests.cpu: "32"
+      requests.memory: 64Gi
+      persistentvolumeclaims: "100"
+
+networkPolicy:
+  enabled: true
+  # Namespace labels of your ingress controller (for API/web ingress traffic).
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: ingress-nginx
+
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+# Bundled single-instance PostgreSQL with pgvector, for trials only.
+postgresql:
+  enabled: false
+  image: pgvector/pgvector:pg16
+  storage: 10Gi
+  storageClassName: ""
+  password: ""

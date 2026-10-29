@@ -88,6 +88,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
     lastSeq: input.resume?.afterSeq ?? -1,
     agentEpoch: input.resume?.agentEpoch ?? null,
     promptInFlight: false,
+    adopt: null as { replayFrom: number } | null,
     promptSent: false,
     createdSession: false,
     setup: null as SessionSetup | null,
@@ -170,7 +171,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
   };
 
   const attach = async (c: AcpClient, sessionId: string, afterSeq: number): Promise<AttachResult> =>
-    c.ext<AttachResult>(GATEWAY_METHODS.attach, { sessionId, afterSeq });
+    c.ext<AttachResult>(GATEWAY_METHODS.attach, { sessionId, afterSeq, requestKey: input.requestKey });
 
   const awaitPrompt = (c: AcpClient, requestKey: string): Promise<PromptResponse> =>
     c.ext<PromptResponse>(GATEWAY_METHODS.awaitPrompt, { requestKey }, 0);
@@ -190,12 +191,13 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
         await cb.onEvent({ type: "turn.interrupted", reason: "worker restarted; direct agent connection was lost", resumable: true });
         return { sessionId: input.resume.sessionId, createdSession: false, stopReason: "interrupted", agentEpoch: null, lastSeq: state.lastSeq, setup: null };
       }
+      // The journal replay that answers this attach is this turn's own output: accept it as live.
+      state.promptInFlight = true;
       const a = await attach(client, input.resume.sessionId, input.resume.afterSeq);
       state.agentEpoch = a.agentEpoch;
       state.setup = a.setup ?? null;
       const sameProcess = a.known && (input.resume.agentEpoch === null || a.agentEpoch === input.resume.agentEpoch);
-      if (sameProcess && (a.pendingPrompt?.requestKey === input.requestKey || a.completedKeys.includes(input.requestKey))) {
-        state.promptInFlight = true;
+      if (sameProcess && (a.prompt || a.pendingPrompt?.requestKey === input.requestKey || a.completedKeys.includes(input.requestKey))) {
         state.promptSent = true;
         progress();
         try {
@@ -211,6 +213,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
           state.promptInFlight = false;
         }
       } else {
+        state.promptInFlight = false;
         // Never resend: Kiro warns a resent prompt can repeat side effects.
         await cb.onEvent({
           type: "turn.interrupted",
@@ -225,7 +228,9 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
     if (!response) {
       await openSession(client);
       if (signal.aborted) throw new OrreryError("cancelled", "turn cancelled before prompt");
-      response = await sendPrompt(client);
+      // A previous attempt already sent this prompt (its checkpoint never reached us): adopt it —
+      // replay its output from the gateway journal and wait for its result. Never re-prompt.
+      response = state.adopt ? await sendPrompt(client, state.adopt) : await sendPrompt(client);
     }
 
     const usage = usageFromWire(response.usage);
@@ -256,6 +261,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
       if (deps.viaGateway) {
         const a = await attach(c, state.sessionId, -1);
         state.agentEpoch = a.agentEpoch;
+        if (a.known && a.prompt) state.adopt = { replayFrom: Math.max(input.resume?.afterSeq ?? -1, a.prompt.startSeq) };
         state.lastSeq = Math.max(state.lastSeq, a.lastSeq);
         if (a.known) {
           state.setup = a.setup ?? null;
@@ -301,21 +307,30 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
     }
   }
 
-  async function sendPrompt(c0: AcpClient): Promise<PromptResponse> {
+  async function sendPrompt(c0: AcpClient, adopt?: { replayFrom: number }): Promise<PromptResponse> {
     const sessionId = state.sessionId!;
     const prompt = state.createdSession && input.promptForNewSession ? input.promptForNewSession : input.prompt;
-    await cb.onEvent({
-      type: "turn.started",
-      provider: deps.adapter.name,
-      sessionId,
-      engine: deps.adapter.name,
-      ...(state.setup?.models?.currentModelId ? { model: state.setup.models.currentModelId } : {}),
-    });
+    if (!adopt) {
+      await cb.onEvent({
+        type: "turn.started",
+        provider: deps.adapter.name,
+        sessionId,
+        engine: deps.adapter.name,
+        ...(state.setup?.models?.currentModelId ? { model: state.setup.models.currentModelId } : {}),
+      });
+    }
     state.promptInFlight = true;
     state.promptSent = true;
     progress();
     let c = c0;
-    let promise = c.prompt({ sessionId, prompt, ...(deps.viaGateway ? { _meta: { orrery: { requestKey: input.requestKey } } } : {}) });
+    let promise: Promise<PromptResponse>;
+    if (adopt) {
+      state.lastSeq = adopt.replayFrom;
+      await attach(c, sessionId, adopt.replayFrom);
+      promise = awaitPrompt(c, input.requestKey);
+    } else {
+      promise = c.prompt({ sessionId, prompt, ...(deps.viaGateway ? { _meta: { orrery: { requestKey: input.requestKey } } } : {}) });
+    }
 
     let cancelSent = false;
     const onAbort = () => {

@@ -1,0 +1,141 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: typecheck + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - name: tests (unit, Postgres/pgvector, gateway, API, Temporal workflows)
+        run: pnpm test
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+          TEMPORAL_TEST: "1"
+      - name: build web console and clickable prototype
+        run: |
+          pnpm --filter @orrery/web build
+          pnpm --filter @orrery/web build:prototype
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orrery-prototype
+          path: apps/web/dist-prototype/index.html
+
+  chart:
+    name: helm chart
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: lint
+        run: |
+          helm lint deploy/helm/orrery --set config.database.url=postgres://u:p@db/orrery
+          helm lint deploy/helm/orrery -f deploy/helm/orrery/values-dev.yaml
+      - name: render and validate against Kubernetes schemas
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          for values in "--set config.database.url=postgres://u:p@db/orrery" \
+                        "-f deploy/helm/orrery/values-dev.yaml" \
+                        "--set config.database.url=postgres://u:p@db/orrery --set worker.keda.enabled=true --set computers.cilium=true --set metrics.serviceMonitor.enabled=true"; do
+            helm template orrery deploy/helm/orrery --namespace orrery $values > rendered.yaml
+            ./kubeconform -strict -summary -kubernetes-version 1.30.0 -skip ScaledObject,CiliumNetworkPolicy,ServiceMonitor rendered.yaml
+          done
+
+  images:
+    name: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: [test]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [api, worker, web, computer, computer-mock]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/orrery-${{ matrix.target }}
+          tags: |
+            type=sha
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: ${{ matrix.target }}
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+
+  e2e:
+    name: end-to-end (compose + mock Kiro)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    needs: [test]
+    env:
+      ORRERY_COMPUTER_TARGET: computer-mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: start the stack
+        run: docker compose up -d --build --wait --wait-timeout 300
+      - name: end-to-end turn, approval, session reuse, worker crash and resume
+        run: >
+          node scripts/e2e.mjs --api http://localhost:8090 --token dev-token --mock --timeout 240
+          --crash-cmd "docker compose kill -s SIGKILL worker"
+          --restart-cmd "docker compose up -d worker"
+      - name: console is served
+        run: curl -fsS http://localhost:8080/ | grep -q '<div id="root">'
+      - name: logs
+        if: failure()
+        run: docker compose logs --no-color --tail 300

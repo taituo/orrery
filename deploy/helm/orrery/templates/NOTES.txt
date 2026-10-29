@@ -1,0 +1,23 @@
+Orrery {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Console:   {{ if .Values.ingress.enabled }}{{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}{{ else }}kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "orrery.fullname" . }}-web 8080{{ end }}
+API docs:  {{ .Values.config.publicBaseUrl }}/docs
+Computers: namespace {{ .Values.computers.namespace }} ({{ .Values.computers.provider }} provider)
+
+Checklist:
+  1. Temporal namespace "{{ .Values.config.temporal.namespace }}" must exist at {{ .Values.config.temporal.address }}:
+       temporal operator namespace create --namespace {{ .Values.config.temporal.namespace }}
+{{- if and (eq .Values.computers.provider "kubernetes") (not (or .Values.computers.kiro.apiKey .Values.computers.kiro.existingSecret)) }}
+  2. Kiro has no credentials yet. Create a Kiro API key (Pro, Pro+, Pro Max or Power plan) and store it:
+       kubectl -n {{ .Values.computers.namespace }} create secret generic {{ include "orrery.fullname" . }}-kiro --from-literal=api-key=<KIRO_API_KEY>
+{{- end }}
+{{- if not .Values.config.oidc.issuer }}
+  3. No OIDC issuer is configured: only the development token (if set) can sign in.
+{{- end }}
+{{- if not .Values.config.providers }}
+  4. No OpenAI-compatible or Clef providers are configured: memory extraction, embeddings,
+     quick replies and the risk guardrail are disabled until you add config.providers.
+{{- end }}
+
+Verify a bot computer end to end:
+  kubectl -n {{ .Values.computers.namespace }} get pods -l app.kubernetes.io/name=orrery-computer

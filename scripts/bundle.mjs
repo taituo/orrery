@@ -7,9 +7,12 @@ import { build } from "esbuild";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-const [entry, outfile] = process.argv.slice(2);
+const args = process.argv.slice(2);
+// --standalone: inline every pure-JS dependency (for tools copied without node_modules).
+const standalone = args.includes("--standalone");
+const [entry, outfile] = args.filter((a) => !a.startsWith("--"));
 if (!entry || !outfile) {
-  console.error("usage: bundle.mjs <entry.ts> <out.js>");
+  console.error("usage: bundle.mjs [--standalone] <entry.ts> <out.js>");
   process.exit(2);
 }
 
@@ -42,7 +45,7 @@ const result = await build({
   format: "esm",
   conditions: ["@orrery/source"],
   mainFields: ["module", "main"],
-  external: EXTERNAL,
+  external: standalone ? ["bufferutil", "utf-8-validate", "pg-native"] : EXTERNAL,
   sourcemap: "linked",
   legalComments: "linked",
   metafile: true,

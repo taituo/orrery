@@ -24,13 +24,18 @@ export class RunEventSink {
     startSeq: number,
     private readonly tracer: TurnTracer | null,
     private readonly flushMs: number,
+    private readonly cursor: (() => unknown) | null,
   ) {
     this.seq = startSeq;
   }
 
-  static async open(db: Db, ref: { runId: string; teamId: string; botId: string; threadId: string }, tracer: TurnTracer | null = null, flushMs = 60): Promise<RunEventSink> {
+  /**
+   * @param cursor optional snapshot persisted atomically with each flushed batch (the ACP
+   *   resume point that the flushed events cover).
+   */
+  static async open(db: Db, ref: { runId: string; teamId: string; botId: string; threadId: string }, tracer: TurnTracer | null = null, flushMs = 60, cursor: (() => unknown) | null = null): Promise<RunEventSink> {
     const next = await events.nextSeq(db, ref.runId);
-    return new RunEventSink(db, ref, next - 1, tracer, flushMs);
+    return new RunEventSink(db, ref, next - 1, tracer, flushMs, cursor);
   }
 
   get lastSeq(): number {
@@ -67,9 +72,11 @@ export class RunEventSink {
     this.buffer = [];
     if (!batch.length) return this.flushing;
     const rows = batch.map((event) => ({ ...this.ref, seq: ++this.seq, event }));
-    this.flushing = this.flushing.then(() => events.append(this.db, rows)).catch(async () => {
+    // Snapshot now: the cursor covers exactly the events cut into this batch.
+    const cursor = this.cursor ? structuredClone(this.cursor()) : undefined;
+    this.flushing = this.flushing.then(() => events.append(this.db, rows, cursor)).catch(async () => {
       // one retry, then give up on this batch rather than blocking the turn
-      await events.append(this.db, rows).catch(() => undefined);
+      await events.append(this.db, rows, cursor).catch(() => undefined);
     });
     return this.flushing;
   }

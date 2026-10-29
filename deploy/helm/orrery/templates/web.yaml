@@ -1,0 +1,99 @@
+{{- $fullname := include "orrery.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-web
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  replicas: {{ .Values.web.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" . "component" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orrery.labels" . | nindent 8 }}
+        app.kubernetes.io/component: web
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          image: {{ include "orrery.image" (dict "ctx" . "name" "web") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            # Same-origin API through the Ingress; leave API_UPSTREAM empty.
+            - { name: ORRERY_API_URL, value: "" }
+            - { name: ORRERY_OIDC_ISSUER, value: {{ .Values.config.oidc.issuer | quote }} }
+            - { name: ORRERY_OIDC_CLIENT_ID, value: {{ .Values.config.oidc.webClientId | quote }} }
+            - { name: ORRERY_OIDC_SCOPE, value: {{ .Values.config.oidc.webScope | quote }} }
+            - { name: ORRERY_OIDC_AUDIENCE, value: {{ .Values.config.oidc.audience | quote }} }
+            - { name: ORRERY_LANGFUSE_URL, value: {{ default .Values.config.langfuse.baseUrl .Values.config.langfuse.uiUrl | quote }} }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.web.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: confd, mountPath: /etc/nginx/conf.d }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: confd, emptyDir: {} }
+      {{- with .Values.web.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.web.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-web
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  selector:
+    {{- include "orrery.selector" (dict "ctx" . "component" "web") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- with .Values.web.podDisruptionBudget }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-web
+  labels:
+    {{- include "orrery.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml . | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" $ "component" "web") | nindent 6 }}
+{{- end }}

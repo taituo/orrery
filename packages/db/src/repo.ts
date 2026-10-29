@@ -8,6 +8,7 @@ import {
   type Bot,
   type Channel,
   type ContentPart,
+  type InboundMessage,
   type KnowledgeBase,
   type KnowledgeSource,
   type Message,
@@ -247,6 +248,10 @@ export const runs = {
     const r = await db.query("SELECT input FROM runs WHERE id = $1", [id]);
     return (r.rows[0]?.input as T | undefined) ?? null;
   },
+  async getAcpCursor<T = unknown>(db: Queryable, id: string): Promise<T | null> {
+    const r = await db.query("SELECT acp_cursor FROM runs WHERE id = $1", [id]);
+    return (r.rows[0]?.acp_cursor as T | undefined) ?? null;
+  },
   async setTraceId(db: Queryable, id: string, traceId: string): Promise<void> {
     await db.query("UPDATE runs SET trace_id = $2 WHERE id = $1", [id, traceId]);
   },
@@ -288,8 +293,12 @@ export const events = {
     const r = await db.query<{ s: number }>("SELECT coalesce(max(seq), 0) + 1 AS s FROM run_events WHERE run_id = $1", [runId]);
     return Number(r.rows[0]?.s ?? 1);
   },
-  /** Batch append; idempotent on (run_id, seq). Notifies live listeners (SSE) after insert. */
-  async append(db: Queryable, batch: Array<{ runId: string; seq: number; teamId: string; botId: string; threadId: string; event: AgentEvent }>): Promise<void> {
+  /**
+   * Batch append; idempotent on (run_id, seq). Notifies live listeners (SSE) after insert.
+   * With `cursor`, the run's ACP resume cursor is updated in the same statement (atomic with
+   * the events it covers).
+   */
+  async append(db: Queryable, batch: Array<{ runId: string; seq: number; teamId: string; botId: string; threadId: string; event: AgentEvent }>, cursor?: unknown): Promise<void> {
     if (!batch.length) return;
     const values: unknown[] = [];
     const rows: string[] = [];
@@ -298,7 +307,13 @@ export const events = {
       rows.push(`($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7})`);
       values.push(e.runId, e.seq, e.teamId, e.botId, e.threadId, e.event.type, JSON.stringify(e.event));
     });
-    await db.query(`INSERT INTO run_events (run_id, seq, team_id, bot_id, thread_id, type, event) VALUES ${rows.join(",")} ON CONFLICT (run_id, seq) DO NOTHING`, values);
+    const insert = `INSERT INTO run_events (run_id, seq, team_id, bot_id, thread_id, type, event) VALUES ${rows.join(",")} ON CONFLICT (run_id, seq) DO NOTHING`;
+    if (cursor === undefined) {
+      await db.query(insert, values);
+    } else {
+      values.push(JSON.stringify(cursor), batch[0]!.runId);
+      await db.query(`WITH ins AS (${insert} RETURNING 1) UPDATE runs SET acp_cursor = $${values.length - 1}::jsonb WHERE id = $${values.length}`, values);
+    }
     const last = batch[batch.length - 1]!;
     await db.query("SELECT pg_notify($1, $2)", [EVENTS_CHANNEL, JSON.stringify({ runId: last.runId, threadId: last.threadId, teamId: last.teamId, seq: last.seq })]);
   },
@@ -622,5 +637,50 @@ export const audit = {
   },
   async list(db: Queryable, teamId: string, limit = 100): Promise<Array<Record<string, unknown>>> {
     return (await db.query("SELECT * FROM audit_log WHERE team_id = $1 ORDER BY created_at DESC LIMIT $2", [teamId, limit])).rows as Array<Record<string, unknown>>;
+  },
+};
+
+/* ------------------------------------------------------------------ delivery outbox */
+
+export interface OutboxEntry {
+  messageId: string;
+  inbound: InboundMessage;
+  attempts: number;
+}
+
+export const outbox = {
+  async add(db: Queryable, inbound: InboundMessage): Promise<void> {
+    await db.query(
+      `INSERT INTO delivery_outbox (message_id, team_id, bot_id, inbound) VALUES ($1, $2, $3, $4) ON CONFLICT (message_id) DO NOTHING`,
+      [inbound.messageId, inbound.teamId, inbound.botId, JSON.stringify(inbound)],
+    );
+  },
+  async done(db: Queryable, messageId: string): Promise<void> {
+    await db.query("DELETE FROM delivery_outbox WHERE message_id = $1", [messageId]);
+  },
+  async failed(db: Queryable, messageId: string, error: string, attempts: number): Promise<void> {
+    // exponential backoff: 5s, 10s, 20s … capped at 5 minutes
+    const delay = Math.min(300, 5 * 2 ** Math.min(attempts, 6));
+    await db.query(
+      `UPDATE delivery_outbox SET attempts = attempts + 1, last_error = $2, next_attempt_at = now() + make_interval(secs => $3) WHERE message_id = $1`,
+      [messageId, error.slice(0, 1000), delay],
+    );
+  },
+  /** Claim due entries for this replica (lease of 60s so other replicas skip them). */
+  async claim(db: Queryable, limit = 50, minAgeSeconds = 5): Promise<OutboxEntry[]> {
+    const r = await db.query(
+      `UPDATE delivery_outbox SET next_attempt_at = now() + interval '60 seconds'
+       WHERE message_id IN (
+         SELECT message_id FROM delivery_outbox
+         WHERE next_attempt_at <= now() AND created_at <= now() - make_interval(secs => $2)
+         ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+       RETURNING message_id, inbound, attempts`,
+      [limit, minAgeSeconds],
+    );
+    return r.rows.map((x) => ({ messageId: x.message_id as string, inbound: x.inbound as InboundMessage, attempts: x.attempts as number }));
+  },
+  async pendingFor(db: Queryable, threadId: string): Promise<number> {
+    const r = await db.query("SELECT count(*)::int AS n FROM delivery_outbox WHERE inbound->>'threadId' = $1", [threadId]);
+    return (r.rows[0]?.n as number) ?? 0;
   },
 };

@@ -1,0 +1,92 @@
+{{- if .Values.postgresql.enabled }}
+{{- $fullname := include "orrery.fullname" . }}
+# Single-instance PostgreSQL 16 + pgvector for trials. Use a managed or operator-run
+# PostgreSQL (CloudNativePG, RDS, Cloud SQL, …) in production.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-postgresql
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  password: {{ include "orrery.postgresPassword" . | b64enc }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-postgresql
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  selector:
+    {{- include "orrery.selector" (dict "ctx" . "component" "postgresql") | nindent 4 }}
+  ports:
+    - { name: postgres, port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-postgresql
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  serviceName: {{ $fullname }}-postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" . "component" "postgresql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orrery.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgresql
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          env:
+            - { name: POSTGRES_USER, value: orrery }
+            - { name: POSTGRES_DB, value: orrery }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $fullname }}-postgresql, key: password } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { name: postgres, containerPort: 5432 }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "orrery", "-d", "orrery"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 2Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: run, mountPath: /var/run/postgresql }
+      volumes:
+        - { name: run, emptyDir: {} }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.postgresql.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgresql.storage }}
+{{- end }}

@@ -30,6 +30,7 @@ import type { ProviderRegistry } from "@orrery/providers";
 import { langfuseTraceUrl, scoreTrace, type Telemetry } from "@orrery/observability";
 import type { Logger } from "pino";
 import { requireRole, type Authenticator, type Principal } from "./auth.js";
+import type { Delivery } from "./delivery.js";
 import { OpenApiRegistry } from "./openapi.js";
 import type { EventHub } from "./sse.js";
 import type { WorkflowGateway } from "./workflow-gateway.js";
@@ -38,6 +39,7 @@ export interface ApiDeps {
   env: Env;
   log: Logger;
   db: Db;
+  delivery: Delivery;
   auth: Authenticator;
   workflows: WorkflowGateway;
   memory: MemoryService;
@@ -70,6 +72,14 @@ const SendMessageSchema = z
 
 const WEBHOOK_AUDIENCE = "orrery-webhook";
 
+/** Temporal client errors that mean "not reachable right now" (gRPC UNAVAILABLE / DEADLINE_EXCEEDED, connect failures). */
+function isTemporalUnavailable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code ?? (err.cause as { code?: unknown } | undefined)?.code;
+  if (code === 14 || code === 4) return true;
+  return err.name === "ServiceError" || /UNAVAILABLE|DEADLINE_EXCEEDED|Failed to connect|ECONNREFUSED/.test(err.message);
+}
+
 export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; openapi: OpenApiRegistry } {
   const { db, env, workflows, memory } = deps;
   const app = new Hono<{ Variables: Vars }>();
@@ -83,7 +93,14 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
   });
 
   app.onError((err, c) => {
-    const e = isOrreryError(err) ? err : err instanceof z.ZodError ? new OrreryError("bad_request", err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")) : new OrreryError("internal", "internal error");
+    const e = isOrreryError(err)
+      ? err
+      : err instanceof z.ZodError
+        ? new OrreryError("bad_request", err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "))
+        : isTemporalUnavailable(err)
+          ? new OrreryError("provider_unavailable", "The workflow engine is unavailable; try again shortly.", { retryable: true })
+          : new OrreryError("internal", "internal error");
+    if (e.code === "provider_unavailable") deps.log.warn({ err: String(err), path: c.req.path }, "dependency unavailable");
     if (e.code === "internal") deps.log.error({ err, path: c.req.path, requestId: c.get("requestId") }, "request failed");
     return c.json({ error: e.toJSON() }, e.httpStatus as 400);
   });
@@ -236,22 +253,12 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
         return { messageId: msg.id, threadId: t.id, mode: "steer", runId: active.id };
       }
     }
-    const msg = await messages.insert(db, { teamId: p.teamId, threadId: t.id, role: "user", author: { type: "user", id: p.userId, ...(p.name ? { name: p.name } : {}) }, parts });
-    const inbound: InboundMessage = {
-      messageId: msg.id,
-      threadId: t.id,
-      botId: bot.id,
-      teamId: p.teamId,
-      channel: t.channel,
-      author: { type: "user", id: p.userId, ...(p.name ? { name: p.name } : {}) },
-      parts,
-      replyTo: null,
-      ...(body.forceProvider ? { forceProvider: body.forceProvider } : {}),
-      receivedAt: nowIso(),
-    };
-    await workflows.deliver(inbound);
-    await threads.touch(db, t.id);
-    return { messageId: msg.id, threadId: t.id, mode: "queue" };
+    const author = { type: "user" as const, id: p.userId, ...(p.name ? { name: p.name } : {}) };
+    const { message: msg, delivered } = await deps.delivery.submit(
+      { teamId: p.teamId, threadId: t.id, role: "user", author, parts },
+      { threadId: t.id, botId: bot.id, teamId: p.teamId, channel: t.channel, author, parts, replyTo: null, ...(body.forceProvider ? { forceProvider: body.forceProvider } : {}) },
+    );
+    return { messageId: msg.id, threadId: t.id, mode: "queue", delivery: delivered ? "delivered" : "pending" };
   });
 
   /* ---------------------------------------------------------------- runs */
@@ -456,9 +463,9 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
     if (threadId && !(await threads.get(db, bot.teamId, threadId))) threadId = undefined;
     if (!threadId) threadId = (await threads.create(db, { teamId: bot.teamId, botId: bot.id, channel: "webhook", createdBy: `webhook:${body.source}`, title: `Webhook: ${body.source}` })).id;
     const author = { type: "system" as const, id: `webhook:${body.source}`, name: body.source };
-    const msg = await messages.insert(db, { teamId: bot.teamId, threadId, role: "user", author, parts: [{ type: "text", text: body.text }] });
-    await workflows.deliver({ messageId: msg.id, threadId, botId: bot.id, teamId: bot.teamId, channel: "webhook", author, parts: msg.parts, replyTo: null, receivedAt: nowIso() });
-    return c.json({ threadId, messageId: msg.id }, 202);
+    const parts: ContentPart[] = [{ type: "text", text: body.text }];
+    const { message: msg, delivered } = await deps.delivery.submit({ teamId: bot.teamId, threadId, role: "user", author, parts }, { threadId, botId: bot.id, teamId: bot.teamId, channel: "webhook", author, parts, replyTo: null });
+    return c.json({ threadId, messageId: msg.id, delivery: delivered ? "delivered" : "pending" }, 202);
   });
 
   /* ---------------------------------------------------------------- streams (SSE) */

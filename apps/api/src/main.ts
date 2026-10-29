@@ -1,5 +1,5 @@
 import { OpenTelemetryWorkflowClientInterceptor } from "@temporalio/interceptors-opentelemetry";
-import { Client, Connection } from "@temporalio/client";
+import { Client } from "@temporalio/client";
 import YAML from "yaml";
 import { loadEnv, loadProviders, taskQueues } from "@orrery/core";
 import { PgListener, createPool, migrate, vectorDims } from "@orrery/db";
@@ -9,7 +9,9 @@ import { ProviderRegistry } from "@orrery/providers";
 import { createLogger, initTelemetry } from "@orrery/observability";
 import { createApp } from "./app.js";
 import { Authenticator } from "./auth.js";
+import { Delivery } from "./delivery.js";
 import { createNodeServer } from "./server.js";
+import { lazyTemporalConnection } from "./temporal.js";
 import { EventHub } from "./sse.js";
 import { TemporalWorkflowGateway } from "./workflow-gateway.js";
 
@@ -34,22 +36,21 @@ const providers = new ProviderRegistry(loadProviders(env, (s) => YAML.parse(s)),
 const memory = new MemoryService(db, providers, dims);
 const knowledge = new KnowledgeService(db, providers, dims);
 
-const connection = await Connection.connect({
-  address: env.TEMPORAL_ADDRESS,
-  ...(env.TEMPORAL_TLS || env.TEMPORAL_API_KEY ? { tls: {} } : {}),
-  ...(env.TEMPORAL_API_KEY ? { apiKey: env.TEMPORAL_API_KEY, metadata: { "temporal-namespace": env.TEMPORAL_NAMESPACE } } : {}),
-});
+const connection = lazyTemporalConnection(env);
 const temporal = new Client({ connection, namespace: env.TEMPORAL_NAMESPACE, interceptors: { workflow: [new OpenTelemetryWorkflowClientInterceptor()] } });
 const workflows = new TemporalWorkflowGateway(temporal, taskQueues(env.TEMPORAL_TASK_QUEUE_PREFIX));
 
 const auth = new Authenticator(env, db);
-const { app } = createApp({ env, log, db, auth, workflows, memory, knowledge, providers, hub, telemetry });
+const delivery = new Delivery(db, workflows, log);
+delivery.start();
+const { app } = createApp({ env, log, db, delivery, auth, workflows, memory, knowledge, providers, hub, telemetry });
 const server = createNodeServer(app, { env, db, memory, knowledge, workflows, log });
 server.listen(env.PORT, () => log.info({ port: env.PORT }, "orrery api listening"));
 
 const shutdown = async (signal: string) => {
   log.info({ signal }, "shutting down");
   server.close();
+  delivery.stop();
   hub.stop();
   await listener.close();
   await db.end();

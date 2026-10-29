@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/dist-prototype
+.git
+.github
+coverage
+*.log
+.env
+.env.*
+deploy/helm
+docs

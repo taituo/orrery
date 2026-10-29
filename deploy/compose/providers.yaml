@@ -1,0 +1,18 @@
+# Optional OpenAI-compatible providers and the Clef decision model for the local stack.
+# Without any, Orrery still runs: Kiro does all the work; memory extraction, embeddings,
+# quick replies and the risk guardrail are disabled.
+#
+# Example: Ollama on the host machine
+# - kind: openai
+#   id: ollama
+#   baseUrl: http://host.docker.internal:11434/v1
+#   roles: [chat, fast, extract, summarize, embed]
+#   models: { chat: [qwen3:8b], embed: nomic-embed-text, embedDims: 768 }
+#
+# Example: Cloudflare Clef on Workers AI (set CF_ACCOUNT_ID / CF_API_TOKEN in .env)
+# - kind: clef
+#   id: clef
+#   format: workers-ai
+#   accountIdEnv: CF_ACCOUNT_ID
+#   apiKeyEnv: CF_API_TOKEN
+[]

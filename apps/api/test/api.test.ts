@@ -11,7 +11,7 @@ import { ProviderRegistry } from "@orrery/providers";
 import { createLogger } from "@orrery/observability";
 import { MCP_TOKEN_AUDIENCE } from "@orrery/tools";
 import { createTestDb, hasTestDb, startFakeModelServer, type FakeServers } from "@orrery/testkit";
-import { Authenticator, EventHub, RecordingWorkflowGateway, createApp, createNodeServer } from "../src/index.js";
+import { Authenticator, Delivery, EventHub, RecordingWorkflowGateway, createApp, createNodeServer } from "../src/index.js";
 
 const TOKEN = "test-dev-token-0123456789";
 const run = hasTestDb() ? describe : describe.skip;
@@ -28,6 +28,7 @@ run("orrery api", () => {
   let base: string;
   let memory: MemoryService;
   let knowledge: KnowledgeService;
+  let delivery: Delivery;
 
   const call = async (method: string, path: string, body?: unknown, token = TOKEN) => {
     const r = await fetch(`${base}${path}`, {
@@ -81,7 +82,8 @@ run("orrery api", () => {
     hub = new EventHub(db, listener);
     await hub.start();
     const log = createLogger("api-test", "silent");
-    const { app } = createApp({ env, log, db, auth: new Authenticator(env, db), workflows: wf, memory, knowledge, providers, hub, telemetry: null });
+    delivery = new Delivery(db, wf, log, { attemptTimeoutMs: 500 });
+    const { app } = createApp({ env, log, db, delivery, auth: new Authenticator(env, db), workflows: wf, memory, knowledge, providers, hub, telemetry: null });
     server = createNodeServer(app, { env, db, memory, knowledge, workflows: wf, log });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -174,6 +176,23 @@ run("orrery api", () => {
     expect(list.json.messages.map((x: any) => x.parts[0].text)).toEqual(["Why is staging red?", "also check prod", "focus on the api pods"]);
     expect((await call("GET", "/v1/runs/active")).json.runs.map((r: any) => r.id)).toContain("run_active1");
     expect((await call("POST", "/v1/runs/run_active1/cancel")).json.cancelled).toBe(true);
+  });
+
+  it("never loses a message when the workflow engine is down (transactional outbox)", async () => {
+    wf.unavailable = true;
+    const r = await call("POST", `/v1/threads/${threadId}/messages`, { text: "are you there?" });
+    expect(r.status).toBe(202);
+    expect(r.json.delivery).toBe("pending");
+    const pending = await db.query("SELECT inbound, attempts FROM delivery_outbox WHERE message_id = $1", [r.json.messageId]);
+    expect(pending.rows[0].attempts).toBe(1);
+    expect(pending.rows[0].inbound).toMatchObject({ messageId: r.json.messageId, threadId, botId });
+
+    wf.unavailable = false;
+    await db.query("UPDATE delivery_outbox SET next_attempt_at = now(), created_at = now() - interval '1 minute'");
+    expect(await delivery.tick()).toBe(1);
+    expect((await db.query("SELECT count(*)::int AS n FROM delivery_outbox")).rows[0].n).toBe(0);
+    const delivered = wf.calls.filter((c) => c.op === "deliver").at(-1)!.args[0] as Record<string, unknown>;
+    expect(delivered).toMatchObject({ messageId: r.json.messageId, parts: [{ type: "text", text: "are you there?" }] });
   });
 
   it("decides approvals strictly from offered options, once, and signals the turn", async () => {

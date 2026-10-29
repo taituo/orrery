@@ -1,0 +1,221 @@
+{{- if eq .Values.computers.provider "kubernetes" }}
+{{- $fullname := include "orrery.fullname" . }}
+{{- $ns := include "orrery.computerNamespace" . }}
+{{- if .Values.computers.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    # Agent pods run untrusted tool calls: enforce the restricted Pod Security Standard.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+{{- end }}
+# Gateway token secret, mirrored into the computers namespace (pods reference it by this name).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orrery-gateway
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+type: Opaque
+data:
+  {{- if .Values.secrets.existingSecret }}
+  {{- $src := (lookup "v1" "Secret" .Release.Namespace .Values.secrets.existingSecret) | default dict }}
+  token-secret: {{ required "secrets.existingSecret must exist before install (gateway-token-secret is mirrored to the computers namespace)" (get ((get $src "data") | default dict) "gateway-token-secret") }}
+  {{- else }}
+  token-secret: {{ include "orrery.platformSecret" (dict "ctx" $ "key" "gateway-token-secret" "gen" (randAlphaNum 48)) }}
+  {{- end }}
+{{- if and .Values.computers.kiro.apiKey (not .Values.computers.kiro.existingSecret) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-kiro
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+type: Opaque
+data:
+  api-key: {{ .Values.computers.kiro.apiKey | b64enc }}
+{{- end }}
+---
+# The workers manage bot computers (server-side apply of Pod/Service/PVC/ConfigMap).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-computer-manager
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, configmaps, persistentvolumeclaims]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch]
+  {{- if .Values.computers.cilium }}
+  - apiGroups: [cilium.io]
+    resources: [ciliumnetworkpolicies]
+    verbs: [get, list, create, update, patch, delete]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-computer-manager
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-computer-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}-worker
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.computers.networkPolicy.enabled }}
+---
+# Only Orrery workers may talk to a computer's ACP gateway.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orrery-computers-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: orrery-computer }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} }
+          podSelector:
+            matchLabels: { orrery.dev/role: worker }
+      ports:
+        - { port: 7777, protocol: TCP }
+---
+# Every computer may resolve DNS and reach the Orrery API (platform MCP tools).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orrery-computers-platform-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: orrery-computer }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} }
+          podSelector:
+            matchLabels:
+              {{- include "orrery.selector" (dict "ctx" . "component" "api") | nindent 14 }}
+      ports:
+        - { port: 8080, protocol: TCP }
+---
+# "open" bots: unrestricted egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orrery-computers-open-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: orrery-computer, orrery.dev/network: open }
+  policyTypes: [Egress]
+  egress:
+    - {}
+{{- if not .Values.computers.cilium }}
+---
+# "restricted" and "none" bots without Cilium: HTTPS to public addresses only (Kiro's inference
+# endpoints must stay reachable). Per-host allowlists need Cilium (computers.cilium=true).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: orrery-computers-restricted-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [orrery-computer] }
+      - { key: orrery.dev/network, operator: In, values: [restricted, none] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- if .Values.computers.networkPolicy.blockPrivateRanges }}
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
+            {{- end }}
+      ports:
+        - { port: 443, protocol: TCP }
+{{- else }}
+---
+# With Cilium: "none" bots may reach only Kiro/AWS endpoints; "restricted" bots additionally get
+# a per-bot CiliumNetworkPolicy (created by the worker) for their allowlisted hosts.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: orrery-computers-kiro-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [orrery-computer] }
+      - { key: orrery.dev/network, operator: In, values: [restricted, none] }
+  egress:
+    - toEndpoints:
+        - matchLabels: { "k8s:io.kubernetes.pod.namespace": kube-system, "k8s:k8s-app": kube-dns }
+      toPorts:
+        - ports: [{ port: "53", protocol: ANY }]
+          rules: { dns: [{ matchPattern: "*" }] }
+    - toFQDNs:
+        - matchPattern: "*.kiro.dev"
+        - matchName: kiro.dev
+        - matchPattern: "*.amazonaws.com"
+        - matchPattern: "*.aws.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+{{- end }}
+{{- end }}
+{{- if .Values.computers.resourceQuota.enabled }}
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: orrery-computers
+  namespace: {{ $ns }}
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+spec:
+  hard:
+    {{- toYaml .Values.computers.resourceQuota.hard | nindent 4 }}
+{{- end }}
+{{- end }}
