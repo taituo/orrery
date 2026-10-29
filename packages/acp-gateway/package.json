@@ -1,0 +1,23 @@
+{
+  "name": "@orrery/acp-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@orrery/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@orrery/core": "workspace:*",
+    "@orrery/acp": "workspace:*",
+    "ws": "^8.18.0",
+    "pino": "^9.7.0"
+  },
+  "scripts": {
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js"
+  }
+}

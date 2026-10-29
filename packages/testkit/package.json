@@ -1,0 +1,29 @@
+{
+  "name": "@orrery/testkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@orrery/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^2.1.0",
+    "@orrery/acp": "workspace:*",
+    "@orrery/core": "workspace:*",
+    "zod": "^4.1.0",
+    "pg": "^8.16.0",
+    "@orrery/db": "workspace:*"
+  },
+  "devDependencies": {
+    "ajv": "^8.20.0",
+    "@orrery/acp-gateway": "workspace:*",
+    "@orrery/providers": "workspace:*",
+    "@orrery/memory": "workspace:*",
+    "@orrery/rag": "workspace:*"
+  }
+}

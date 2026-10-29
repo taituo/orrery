@@ -1,0 +1,43 @@
+{
+  "name": "@orrery/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@orrery/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.3.0",
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "@orrery/acp": "workspace:*",
+    "@orrery/acp-gateway": "workspace:*",
+    "@orrery/core": "workspace:*",
+    "@orrery/db": "workspace:*",
+    "@orrery/memory": "workspace:*",
+    "@orrery/observability": "workspace:*",
+    "@orrery/providers": "workspace:*",
+    "@orrery/rag": "workspace:*",
+    "@orrery/tools": "workspace:*",
+    "@orrery/workflows": "workspace:*",
+    "@temporalio/activity": "^1.25.0",
+    "@temporalio/client": "^1.25.0",
+    "@temporalio/common": "^1.25.0",
+    "@temporalio/interceptors-opentelemetry": "^1.25.0",
+    "@temporalio/worker": "^1.25.0",
+    "@temporalio/workflow": "^1.25.0",
+    "pino": "^9.7.0",
+    "ws": "^8.18.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.1.0"
+  },
+  "scripts": {
+    "build": "node ../../scripts/bundle.mjs src/main.ts dist/main.js && node ../../scripts/bundle-workflows.mjs"
+  },
+  "devDependencies": {
+    "@temporalio/testing": "^1.25.0"
+  }
+}

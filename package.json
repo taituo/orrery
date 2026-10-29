@@ -1,0 +1,40 @@
+{
+  "name": "orrery",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orrery \u2014 durable, self-hosted AI teammates (Grok Bot\u2013class) on Temporal, with Kiro ACP (CLI V3 + v2) as primary inference, OpenAI-compatible side models, Clef decisions, layered memory, RAG, Langfuse observability and Kubernetes-native bot computers.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --filter @orrery/web typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "pnpm -r --filter './apps/*' --filter @orrery/acp-gateway build",
+    "dev:api": "node --conditions=@orrery/source --import tsx apps/api/src/main.ts",
+    "dev:worker": "node --conditions=@orrery/source --import tsx apps/worker/src/main.ts",
+    "dev:gateway": "node --conditions=@orrery/source --import tsx packages/acp-gateway/src/main.ts",
+    "dev:web": "pnpm --filter @orrery/web dev",
+    "db:migrate": "node --conditions=@orrery/source --import tsx packages/db/src/cli.ts migrate",
+    "lint:helm": "helm lint deploy/helm/orrery && helm template orrery deploy/helm/orrery > /dev/null"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/pg": "^8.15.0",
+    "@types/ws": "^8.18.0",
+    "ajv": "^8.17.1",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.5",
+    "yaml": "^2.8.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@opentelemetry/api": "~1.9.0"
+    }
+  }
+}

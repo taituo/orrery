@@ -1,0 +1,20 @@
+{
+  "name": "@orrery/rag",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@orrery/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@orrery/core": "workspace:*",
+    "@orrery/db": "workspace:*",
+    "@orrery/providers": "workspace:*",
+    "unpdf": "^1.0.0"
+  }
+}

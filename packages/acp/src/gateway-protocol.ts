@@ -1,0 +1,106 @@
+import type { SessionConfigOption, SessionModeState, SessionModelState } from "./protocol.js";
+
+/**
+ * Orrery ACP gateway control protocol.
+ *
+ * The gateway runs inside each bot computer next to `kiro-cli acp` and relays standard ACP over
+ * an authenticated WebSocket. On top of plain ACP it adds a few `_orrery/gateway/*` methods so
+ * that a Temporal activity that crashed (or whose pod was rescheduled) can re-attach to a turn
+ * that is still running inside Kiro — without resending the prompt, which Kiro explicitly warns
+ * against because it can repeat side effects.
+ *
+ * Every notification the gateway relays carries `params._meta.orrery.seq` (monotonic per
+ * session); clients dedupe on it after a re-attach.
+ */
+export const GATEWAY_METHODS = {
+  /** Become the owner of a session; replay journaled notifications with seq > afterSeq. */
+  attach: "_orrery/gateway/attach",
+  /** Resolve with the `session/prompt` result for `requestKey` (waits if still running). */
+  awaitPrompt: "_orrery/gateway/awaitPrompt",
+  /** Gateway + agent process status. */
+  status: "_orrery/gateway/status",
+  /** Stop owning a session (pending agent→client requests are held for the next owner). */
+  detach: "_orrery/gateway/detach",
+} as const;
+
+export const GATEWAY_TOKEN_AUDIENCE = "orrery-acp-gateway";
+
+/** JSON-RPC error codes used by the gateway (server-defined range). */
+export const GATEWAY_ERRORS = {
+  /** The agent process restarted; in-flight prompts were lost. Resumable by re-prompting manually. */
+  agentRestarted: -32098,
+  /** No prompt result is known for this request key (gateway restarted or result expired). */
+  unknownRequestKey: -32097,
+} as const;
+
+export interface AttachParams {
+  sessionId: string;
+  /** -1 = take ownership without replay. */
+  afterSeq: number;
+}
+
+export interface AttachResult {
+  /** The running agent process knows this session (still in memory). */
+  known: boolean;
+  /** Random id of the current agent process; changes when the agent restarts. */
+  agentEpoch: string;
+  lastSeq: number;
+  replayed: number;
+  /** A prompt for this session that is still running inside the agent. */
+  pendingPrompt: { requestKey: string; startedAt: string } | null;
+  /** Prompt results held for keys whose requester disconnected. */
+  completedKeys: string[];
+  /** Last advertised modes / models / config options for the session (from new/load + updates). */
+  setup: SessionSetupSnapshot | null;
+}
+
+export interface SessionSetupSnapshot {
+  modes?: SessionModeState | null;
+  models?: SessionModelState | null;
+  configOptions?: SessionConfigOption[] | null;
+}
+
+export interface AwaitPromptParams {
+  requestKey: string;
+}
+
+export interface GatewayStatus {
+  agentEpoch: string;
+  agentPid: number | null;
+  agentInfo: unknown;
+  ready: boolean;
+  restarts: number;
+  startedAt: string;
+  sessions: Array<{ sessionId: string; lastSeq: number; owned: boolean; pendingPrompt: string | null; pendingAgentRequests: number }>;
+}
+
+export interface OrreryMeta {
+  seq?: number;
+  requestKey?: string;
+  agentEpoch?: string;
+}
+
+export function readOrreryMeta(params: unknown): OrreryMeta {
+  if (typeof params !== "object" || params === null) return {};
+  const meta = (params as { _meta?: { orrery?: OrreryMeta } })._meta;
+  return meta?.orrery ?? {};
+}
+
+/** Return a shallow copy of params with `_meta.orrery` removed (never forwarded to the agent). */
+export function stripOrreryMeta<T>(params: T): T {
+  if (typeof params !== "object" || params === null) return params;
+  const p = params as { _meta?: Record<string, unknown> };
+  if (!p._meta || !("orrery" in p._meta)) return params;
+  const { orrery: _o, ...restMeta } = p._meta;
+  const copy = { ...(params as object) } as { _meta?: Record<string, unknown> };
+  if (Object.keys(restMeta).length) copy._meta = restMeta;
+  else delete copy._meta;
+  return copy as T;
+}
+
+export function withOrreryMeta<T>(params: T, meta: OrreryMeta): T {
+  if (typeof params !== "object" || params === null || Array.isArray(params)) return params;
+  const p = params as { _meta?: Record<string, unknown> | null };
+  const existing = p._meta && typeof p._meta === "object" ? p._meta : {};
+  return { ...(params as object), _meta: { ...existing, orrery: { ...((existing as { orrery?: object }).orrery ?? {}), ...meta } } } as T;
+}
