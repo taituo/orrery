@@ -73,7 +73,7 @@ jobs:
           done
 
   kiro-install:
-    name: kiro-cli install (linux/amd64)
+    name: kiro-cli install + ACP probe
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -81,11 +81,13 @@ jobs:
       - name: install kiro-cli the way the computer image does
         run: |
           set +e
-          docker run --rm -v "$PWD/deploy/docker:/s:ro" node:22-bookworm-slim bash -c \
-            'apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates >/dev/null && bash /s/install-kiro-cli.sh' > kiro-install.log 2>&1
+          docker run --rm -v "$PWD/deploy/docker:/s:ro" -v "$PWD/scripts:/scripts:ro" node:22-bookworm-slim bash -c \
+            'apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates >/dev/null && bash /s/install-kiro-cli.sh \
+             && echo "--- ACP probe (no credentials) ---" && node /scripts/probe-kiro-acp.mjs kiro-cli both' > kiro-install.log 2>&1
           status=$?
           cat kiro-install.log
-          msg=$(tail -c 3500 kiro-install.log | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+          msg=$(sed -n '/--- ACP probe/,$p' kiro-install.log | head -c 60000 | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+          [ -n "$msg" ] || msg=$(tail -c 3500 kiro-install.log | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
           if [ $status -eq 0 ]; then echo "::notice title=kiro-cli install::$msg"; else echo "::error title=kiro-cli install::$msg"; fi
           exit $status
 
