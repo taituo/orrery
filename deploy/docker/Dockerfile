@@ -68,35 +68,31 @@ COPY deploy/docker/web/40-orrery-config.sh /docker-entrypoint.d/40-orrery-config
 ENV API_UPSTREAM="" ORRERY_API_URL="" ORRERY_OIDC_ISSUER="" ORRERY_OIDC_CLIENT_ID="" ORRERY_OIDC_SCOPE="openid profile email offline_access" ORRERY_OIDC_AUDIENCE="" ORRERY_LANGFUSE_URL=""
 EXPOSE 8080
 
-############################################################ computer
-FROM node:${NODE_VERSION}-bookworm-slim AS computer
-ARG TARGETARCH
-# Pin a Kiro CLI build by overriding the URL (defaults to the latest release for the platform).
-ARG KIRO_CLI_URL=""
+############################################################ computer-base
+# Bot computer without an agent: dev tools + the Orrery ACP gateway.
+FROM node:${NODE_VERSION}-bookworm-slim AS computer-base
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip git openssh-client jq ripgrep less procps python3 python3-venv make tini \
  && rm -rf /var/lib/apt/lists/*
-RUN set -eux; \
-    arch="$( [ "$TARGETARCH" = "arm64" ] && echo aarch64 || echo x86_64 )"; \
-    url="${KIRO_CLI_URL:-https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-${arch}-linux.zip}"; \
-    mkdir -p /tmp/kiro && cd /tmp/kiro; \
-    curl --proto '=https' --tlsv1.2 -fsSL "$url" -o kirocli.zip; \
-    unzip -q kirocli.zip; \
-    HOME=/tmp/kiro/home bash ./kirocli/install.sh --no-confirm; \
-    cp -a /tmp/kiro/home/.local/bin/. /usr/local/bin/; \
-    rm -rf /tmp/kiro; \
-    kiro-cli --version || kiro-cli version
 # uid 1000 ("node") matches the pod securityContext; its home is the persistent volume.
 RUN usermod -d /home/agent node && mkdir -p /home/agent/workspace && chown -R node:node /home/agent
 COPY --from=build --chown=node:node /out/gateway /opt/orrery/gateway
 ENV NODE_ENV=production HOME=/home/agent WORKSPACE_ROOT=/home/agent/workspace KIRO_CLI_PATH=/usr/local/bin/kiro-cli GATEWAY_PORT=7777
 WORKDIR /home/agent/workspace
-USER node
 EXPOSE 7777
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "/opt/orrery/gateway/dist/main.js"]
 
+############################################################ computer
+FROM computer-base AS computer
+# Pin a Kiro CLI build by overriding the URL (defaults to the latest release for the platform).
+ARG KIRO_CLI_URL=""
+COPY deploy/docker/install-kiro-cli.sh /tmp/install-kiro-cli.sh
+RUN KIRO_CLI_URL="$KIRO_CLI_URL" bash /tmp/install-kiro-cli.sh && rm /tmp/install-kiro-cli.sh
+USER node
+
 ############################################################ computer-mock
-FROM computer AS computer-mock
+FROM computer-base AS computer-mock
 COPY --from=build --chown=node:node /out/mock /opt/orrery/mock
 ENV KIRO_CLI_PATH="node /opt/orrery/mock/mock-kiro-cli.js" MOCK_KIRO_GENERATION=v3
+USER node

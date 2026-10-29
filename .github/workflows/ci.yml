@@ -72,10 +72,27 @@ jobs:
             ./kubeconform -strict -summary -kubernetes-version 1.30.0 -skip ScaledObject,CiliumNetworkPolicy,ServiceMonitor rendered.yaml
           done
 
+  kiro-install:
+    name: kiro-cli install (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: install kiro-cli the way the computer image does
+        run: |
+          set +e
+          docker run --rm -v "$PWD/deploy/docker:/s:ro" node:22-bookworm-slim bash -c \
+            'apt-get update -qq && apt-get install -y -qq curl unzip ca-certificates >/dev/null && bash /s/install-kiro-cli.sh' > kiro-install.log 2>&1
+          status=$?
+          cat kiro-install.log
+          msg=$(tail -c 3500 kiro-install.log | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+          if [ $status -eq 0 ]; then echo "::notice title=kiro-cli install::$msg"; else echo "::error title=kiro-cli install::$msg"; fi
+          exit $status
+
   images:
     name: images
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 75
     needs: [test]
     permissions:
       contents: read
@@ -127,6 +144,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          package-manager-cache: false
       - name: start the stack
         run: docker compose up -d --build --wait --wait-timeout 300
       - name: end-to-end turn, approval, session reuse, worker crash and resume
