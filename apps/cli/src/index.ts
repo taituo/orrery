@@ -63,7 +63,8 @@ const HELP = `orrery ${VERSION} — talk to your Orrery bots from the terminal
                      [--instructions <text>] [--provider <id>]
   orrery bots delete <bot>
   orrery ask <bot|group> <message…>          one turn: stream the answer, then exit
-         [--thread <id>] [--approve] [--json]   (--approve: allow tool calls once, automatically)
+         [--thread <id>] [--approve] [--json] [--timeout <s>]
+                                             (--approve: allow tool calls once, automatically)
   orrery chat <bot|group> [--thread <id>]    interactive conversation (approvals inline)
   orrery threads <bot>                       conversations of a bot
 
@@ -313,8 +314,18 @@ async function chat(api: OrreryClient, io: Io, cmd: "ask" | "chat", positional: 
   await session.start();
   try {
     if (message) {
-      const ok = await session.send(message);
+      const seconds = Number(args.flags.timeout ?? 0);
+      if (!Number.isFinite(seconds) || seconds < 0) throw new UsageError("--timeout takes seconds (0 waits as long as it takes)");
+      let timer: NodeJS.Timeout | undefined;
+      const timedOut = new Promise<"timeout">((resolve) => {
+        if (cmd === "ask" && seconds > 0) timer = setTimeout(() => resolve("timeout"), seconds * 1000);
+      });
+      const ok = await Promise.race([session.send(message), timedOut]).finally(() => clearTimeout(timer));
       if (cmd === "ask") {
+        if (ok === "timeout") {
+          io.err(style.yellow(`Still running after ${seconds}s. It carries on without you: orrery chat ${ref} --thread ${threadId}`));
+          return 124;
+        }
         if (!args.flags.json) io.err(style.dim(`thread ${threadId}`));
         return ok ? 0 : 1;
       }

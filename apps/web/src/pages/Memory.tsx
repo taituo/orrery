@@ -8,7 +8,7 @@ import { useApi, useCan, useLoad } from "../lib/hooks";
 const KINDS: MemoryKind[] = ["fact", "preference", "instruction", "entity", "procedure", "episode_summary"];
 const kindLabel = (k: string) => (k === "episode_summary" ? "episode" : k);
 const BLOCKS = [
-  { key: "persona", label: "Persona", help: "Who the teammate is and how it works. Always in context." },
+  { key: "persona", label: "Persona", help: "Who the bot is and how it works. Always in context." },
   { key: "human", label: "About the team", help: "What it should always know about the people it works with." },
   { key: "notes", label: "Working notes", help: "Scratchpad the agent edits itself with core_memory tools." },
 ] as const;
@@ -65,11 +65,11 @@ export function MemoryPage() {
       <div className="page-head">
         <div>
           <h1>Memory</h1>
-          <p>What each teammate remembers between conversations. Core memory is always in context; long-term memories are recalled when relevant and kept current — newer facts replace contradicted ones instead of piling up.</p>
+          <p>What each bot remembers between conversations. Core memory is always in context; long-term memories are recalled when relevant and kept current — newer facts replace contradicted ones instead of piling up.</p>
         </div>
         <div className="row">
           <label className="field" style={{ minWidth: 180 }}>
-            <span>Teammate</span>
+            <span>Bot</span>
             <select className="select" value={botId} onChange={(e) => setParams({ bot: e.target.value })}>
               {bots.data?.map((b) => (
                 <option key={b.id} value={b.id}>
@@ -127,7 +127,7 @@ export function MemoryPage() {
         {canWrite && (
           <div className="panel">
             <div className="panel-head">
-              <strong>Teach {bot?.name ?? "this teammate"} something</strong>
+              <strong>Teach {bot?.name ?? "this bot"} something</strong>
             </div>
             <div className="panel-body stack">
               <div className="row">
@@ -161,7 +161,7 @@ export function MemoryPage() {
                 if (probe) void api.recall(botId, probe).then(setRecall);
               }}
             >
-              <input className="input grow" placeholder="Ask what the teammate would remember…" value={probe} onChange={(e) => setProbe(e.target.value)} aria-label="Recall query" />
+              <input className="input grow" placeholder="Ask what the bot would remember…" value={probe} onChange={(e) => setProbe(e.target.value)} aria-label="Recall query" />
               <button className="btn">Recall</button>
             </form>
             {recall && (recall.length ? (
@@ -241,7 +241,7 @@ export function MemoryPage() {
           ))
         ) : (
           <div className="panel-body">
-            <Empty title={q || kind ? "No memories match" : "No long-term memories yet"}>Teammates learn from conversations automatically when auto-extract is on.</Empty>
+            <Empty title={q || kind ? "No memories match" : "No long-term memories yet"}>Bots learn from conversations automatically when auto-extract is on.</Empty>
           </div>
         )}
       </div>

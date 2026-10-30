@@ -237,6 +237,9 @@ computers:
   # Sandbox runtime for agent pods, e.g. gvisor ("runsc") or kata.
   runtimeClassName: ""
   storageClassName: ""
+  # Pull secrets for the computer image ([{name: regcred}]), in the computers namespace (create
+  # them there). Empty: the top-level imagePullSecrets. Not needed for the public ghcr.io images.
+  imagePullSecrets: []
   # Per-bot FQDN egress allowlists via CiliumNetworkPolicy (requires Cilium).
   cilium: false
   staticUrl: ""

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router";
 import { Empty, ErrorBox, Tabs } from "../components/ui";
 import { engineLabel, num, relTime } from "../lib/format";
 import { useApi, useCan, useLoad } from "../lib/hooks";
@@ -61,8 +62,8 @@ function Providers() {
           <span className="chip blue">Primary inference</span>
         </div>
         <div className="panel-body small">
-          <p>Runs inside each teammate's computer through the Orrery ACP gateway, which keeps the agent process alive across worker restarts and replays held permission requests. Both the CLI V3 engine (<code>kiro-cli acp --agent-engine=v3</code>) and the legacy CLI v2 are supported; "detect version" falls back to v2 when V3 flags are rejected.</p>
-          <p className="muted" style={{ margin: 0 }}>Credentials come from the <code>orrery-kiro</code> Kubernetes secret on the bot computers, never from this console.</p>
+          <p>Runs inside each bot's computer through the Orrery ACP gateway, which keeps the agent process alive across worker restarts and replays held permission requests. Both the CLI V3 engine (<code>kiro-cli acp --agent-engine=v3</code>) and the legacy CLI v2 are supported; "detect version" falls back to v2 when V3 flags are rejected.</p>
+          <p className="muted" style={{ margin: 0 }}>Kiro needs an API key on the bot computers: set <code>KIRO_API_KEY</code> in <Link to="/settings">Settings</Link>, or put it in the cluster's <code>orrery-kiro</code> secret.</p>
         </div>
       </div>
       <div className="panel">
@@ -71,7 +72,7 @@ function Providers() {
           <span className="chip">Coding agent</span>
         </div>
         <div className="panel-body small">
-          <p>Runs <code>opencode acp</code> in the teammate's computer behind the same gateway. It can use the OpenAI-compatible providers below (as <code>orrery-&lt;id&gt;/&lt;model&gt;</code>) or any provider OpenCode supports. With Orrery permissions every tool call is asked over ACP and decided by the teammate's policy; project config in the workspace is ignored so the agent can't grant itself permissions.</p>
+          <p>Runs <code>opencode acp</code> in the bot's computer behind the same gateway. It can use the OpenAI-compatible providers below (as <code>orrery-&lt;id&gt;/&lt;model&gt;</code>) or any provider OpenCode supports. With Orrery permissions every tool call is asked over ACP and decided by the bot's policy; project config in the workspace is ignored so the agent can't grant itself permissions.</p>
           <p className="muted" style={{ margin: 0 }}>Model credentials (<code>ANTHROPIC_API_KEY</code>, provider keys) come from the agent environment secret on the bot computers.</p>
         </div>
       </div>
@@ -152,7 +153,7 @@ function Usage() {
         <table className="table responsive">
           <thead>
             <tr>
-              <th>Teammate</th>
+              <th>Bot</th>
               <th>Provider</th>
               <th className="num">Turns</th>
               <th style={{ width: "30%" }}>Tokens</th>
@@ -209,7 +210,7 @@ function Computers() {
           <thead>
             <tr>
               <th>Computer</th>
-              <th>Teammate</th>
+              <th>Bot</th>
               <th>Agent</th>
               <th>Status</th>
               <th>Last active</th>
@@ -231,7 +232,7 @@ function Computers() {
         </table>
       ) : (
         <div className="panel-body">
-          <Empty title="No computers running">They start on a teammate's first turn and stop after the idle timeout.</Empty>
+          <Empty title="No computers running">They start on a bot's first turn and stop after the idle timeout.</Empty>
         </div>
       )}
     </div>

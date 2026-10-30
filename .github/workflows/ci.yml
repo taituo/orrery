@@ -139,6 +139,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+      - name: anyone can pull it
+        if: github.event_name != 'pull_request'
+        run: |
+          docker logout ghcr.io
+          ref=ghcr.io/${{ github.repository_owner }}/orrery-${{ matrix.target }}:${{ github.ref_name }}
+          if docker manifest inspect "$ref" > /dev/null 2>&1; then
+            echo "::notice title=orrery-${{ matrix.target }} is public::helm install pulls $ref without credentials."
+          else
+            echo "::warning title=orrery-${{ matrix.target }} is private::Out-of-the-box installs need public images. On GitHub open Packages → orrery-${{ matrix.target }} → Package settings → Change visibility → Public (or give the chart imagePullSecrets)."
+          fi
 
   e2e:
     name: end-to-end (compose + mock Kiro)
@@ -278,24 +288,29 @@ jobs:
           curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' | grep -q '"orrery"'
           curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -q '"ask_bot"'
       - name: end to end on Kubernetes (mock Kiro computers; approval, session reuse, ACP worker rolled mid-turn, group hand-off)
+        timeout-minutes: 12
         run: >
           node scripts/e2e.mjs --api http://localhost:8080 --token "$TOKEN" --mock --timeout 600
           --computer-image ghcr.io/taituo/orrery-computer-mock:ci
           --crash-cmd "kubectl -n $NS rollout restart deploy/orrery-worker-acp"
           --restart-cmd "kubectl -n $NS rollout status deploy/orrery-worker-acp --timeout=300s"
       - name: end to end on Kubernetes (real OpenCode on a platform provider; worker killed while waiting for approval)
+        timeout-minutes: 12
         run: >
           node scripts/e2e.mjs --api http://localhost:8080 --token "$TOKEN" --agent opencode --model orrery-fake/fake-small --timeout 600
           --crash-cmd "kubectl -n $NS delete pod -l app.kubernetes.io/component=worker-acp --wait=false --grace-period=0 --force"
           --restart-cmd "kubectl -n $NS rollout status deploy/orrery-worker-acp --timeout=300s"
       - name: CLI against the cluster
+        timeout-minutes: 8
         run: |
+          set -o pipefail
           ./orrery bots create cli-bot --engine opencode --model orrery-fake/fake-small
-          ./orrery ask cli-bot "run: echo from-the-cli" --approve | tee ask.txt
+          ./orrery ask cli-bot "run: echo from-the-cli" --approve --timeout 300 2>&1 | tee ask.txt
           grep -q from-the-cli ask.txt
           ./orrery tokens create ci-token --role member > member.token
           ORRERY_TOKEN=$(cat member.token) ./orrery whoami | grep -q member
       - name: helm upgrade keeps secrets and data
+        timeout-minutes: 10
         run: |
           helm upgrade orrery deploy/helm/orrery -n $NS -f deploy/ci/values-kind.yaml --wait --timeout 10m
           [ "$(kubectl -n $NS get secret orrery-platform -o jsonpath='{.data.admin-token}' | base64 -d)" = "$TOKEN" ]
@@ -304,7 +319,7 @@ jobs:
           for i in $(seq 1 30); do curl -fsS localhost:8080/readyz >/dev/null 2>&1 && break; sleep 2; done
           ./orrery bots | grep -q cli-bot
       - name: diagnostics
-        if: failure()
+        if: failure() || cancelled()
         run: |
           mkdir -p diag
           kubectl get pods -A -o wide > diag/pods.txt 2>&1 || true

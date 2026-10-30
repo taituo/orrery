@@ -193,3 +193,10 @@ Usage: include "orrery.platformSecret" (dict "ctx" $ "key" "gateway-token-secret
 {{- end -}}
 {{- get $cache .key -}}
 {{- end -}}
+
+{{/* Comma-separated names from an imagePullSecrets list ([{name: regcred}]). */}}
+{{- define "orrery.pullSecretNames" -}}
+{{- $names := list -}}
+{{- range . }}{{ $names = append $names .name }}{{ end -}}
+{{- join "," $names -}}
+{{- end -}}

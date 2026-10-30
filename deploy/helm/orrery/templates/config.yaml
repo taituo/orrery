@@ -57,6 +57,9 @@ data:
   {{- with .Values.computers.runtimeClassName }}
   COMPUTER_RUNTIME_CLASS: {{ . | quote }}
   {{- end }}
+  {{- with (default .Values.imagePullSecrets .Values.computers.imagePullSecrets) }}
+  COMPUTER_IMAGE_PULL_SECRETS: {{ include "orrery.pullSecretNames" . | quote }}
+  {{- end }}
   {{- with .Values.computers.storageClassName }}
   COMPUTER_STORAGE_CLASS: {{ . | quote }}
   {{- end }}

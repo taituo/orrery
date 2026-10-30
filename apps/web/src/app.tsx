@@ -6,6 +6,7 @@ import { Orb, OrbStack, Wave } from "./components/Orb";
 import { Dialog, OrreryMark } from "./components/ui";
 import { useFleet } from "./lib/fleet";
 import { ApiProvider, useApi, useCan, useLoad } from "./lib/hooks";
+import { setActivity } from "./lib/mood";
 import { useTheme } from "./lib/theme";
 import { ApprovalsPage } from "./pages/Approvals";
 import { BotSettingsPage } from "./pages/BotSettings";
@@ -26,6 +27,11 @@ function Shell() {
   const [newGroup, setNewGroup] = useState(false);
   const loc = useLocation();
   useEffect(() => setOpen(false), [loc.pathname]);
+  // Let the room feel the bots: how many are working, whether anyone waits on you.
+  const values = Object.values(activity);
+  const working = values.filter((a) => a === "working").length;
+  const waiting = values.filter((a) => a === "waiting").length;
+  useEffect(() => setActivity(working, waiting), [working, waiting]);
 
   const sub = (id: string, description: string) => {
     const a = activity[id];
@@ -58,10 +64,15 @@ function Shell() {
           )}
         </div>
         <aside className={`rail glass ${open ? "open" : ""}`} aria-label="Conversations">
-          <NavLink to="/" className="wordmark" end>
-            <OrreryMark />
-            orrery
-          </NavLink>
+          <div className="spread">
+            <NavLink to="/" className="wordmark" end>
+              <OrreryMark />
+              orrery
+            </NavLink>
+            <button className="btn ghost sm mobile-only rail-close" onClick={() => setOpen(false)}>
+              Close
+            </button>
+          </div>
           <div className="rail-scroll">
             <div className="rail-group">
               <div className="rail-label">

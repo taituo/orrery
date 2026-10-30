@@ -18,7 +18,7 @@ Durable, self-hosted AI teammates: always-on agents (in the spirit of Grok Bots)
   - A REST + SSE API with an OpenAPI 3.1 spec at `/openapi.json`.
   - The `orrery` CLI, for chat, approvals, groups, tokens and agent credentials.
   - `/mcp`. People's tokens get tools to ask bots and decide approvals from any MCP client; agents get memory, knowledge and delegation tools.
-  - A web console: one conversation per bot or group, approvals inline, a floating composer with @mentions and live steering. It has three looks: Warm (a slow paper-design shader under frosted glass), Dusk, and Wireframe (plain white with black hairlines). A clickable prototype builds to a single HTML file.
+  - A web console: one conversation per bot or group, approvals inline, a floating composer with @mentions and live steering. Every look is a live paper-design shader under frosted glass that reacts to the bots: it moves faster while they work, warms and breathes while one waits for you, and flares when you send something. Looks: Warm, Dusk, Eclipse (a ring of fire around a dark sun), Synapse (filaments that fire while bots think), Nebula (a glass planet stirring the dark), and Wireframe (plain white, black hairlines, nothing moves). A clickable prototype builds to a single HTML file.
 
 ## Status
 

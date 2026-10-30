@@ -118,6 +118,14 @@ The admin token can stay as a break-glass owner, or you can set `config.adminTok
 
 The key is derived from the platform's gateway secret, which never enters the computers namespace, so an agent that reads its environment can only reach its own gateway. The pod rolls when its spec hash changes.
 
+### Images
+
+The images on `ghcr.io/taituo` are public, so the chart pulls them without credentials. From a private registry, set `image.registry` and `imagePullSecrets`. Bot computers run in the computers namespace, so create the pull secret there too; set `computers.imagePullSecrets` if it has a different name there.
+
+### Upgrades and running turns
+
+`helm upgrade` and node drains don't interrupt conversations. An ACP worker that gets SIGTERM lets go of its running turns without cancelling them: the agent keeps working on its computer, and another worker re-attaches, replays what it missed and finishes the turn. A pending approval stays pending. CI checks this by restarting the ACP workers in the middle of a turn. A worker that crashes outright is covered too, after the activity heartbeat timeout (45 seconds).
+
 ### Kiro credentials
 
 Kiro headless mode authenticates with an API key from a Pro, Pro+, Pro Max or Power plan. Store it in the computers namespace:

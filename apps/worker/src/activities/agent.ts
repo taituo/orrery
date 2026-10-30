@@ -587,7 +587,10 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
           if (b) allBots.set(id, b);
         }
         const idle = await computers.idle(db, (row) => {
-          return row.botId ? (allBots.get(row.botId)?.computer.idleMinutes ?? 60) : 60;
+          if (!row.botId) return 60;
+          const b = allBots.get(row.botId);
+          // An archived (or deleted) bot's computer goes as soon as nothing runs on it.
+          return !b || b.status === "archived" ? 0 : b.computer.idleMinutes;
         });
         let stopped = 0;
         for (const c of idle) {

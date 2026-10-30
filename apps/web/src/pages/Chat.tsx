@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { flare } from "../lib/mood";
 import { Link, useNavigate, useParams } from "react-router";
 import type { Bot, Group, Message, Thread } from "../api";
 import { Inspector } from "../components/Inspector";
@@ -455,6 +456,7 @@ function Composer(props: {
       if (!threadId) return;
       const r = await api.sendMessage(threadId, { text: body, mode: steering ? mode : "queue" });
       setText("");
+      flare();
       props.onSent();
       if (r.mode === "steer") toast(`Sent to ${props.botName}'s current turn.`);
     } catch (e) {

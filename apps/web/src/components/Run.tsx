@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PlanEntry, ToolCallState } from "@orrery/core/pure";
 import { useApi, useCan } from "../lib/hooks";
+import { flare } from "../lib/mood";
 import { duration, num, pct, relTime } from "../lib/format";
 import { credits, type ApprovalView, type RunView } from "../lib/runs";
 import { KindIcon } from "./ui";
@@ -121,6 +122,7 @@ export function ApprovalCard({ a, compact }: { a: ApprovalView; compact?: boolea
         ...(kind === "allow_always" && a.consent?.resource ? { persist: { scope: "workspace", resource: a.consent.resource } } : {}),
         ...(note ? { note } : {}),
       });
+      flare();
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {

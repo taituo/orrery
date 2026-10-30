@@ -32,7 +32,7 @@ export function KnowledgePage() {
       <div className="page-head">
         <div>
           <h1>Knowledge</h1>
-          <p>Documents teammates can search. Sources are chunked, embedded and screened for prompt injection before they're indexed; answers only use passages that actually support them.</p>
+          <p>Documents bots can search. Sources are chunked, embedded and screened for prompt injection before they're indexed; answers only use passages that actually support them.</p>
         </div>
         {canAdmin && (
           <button className="btn" onClick={() => setCreating(true)}>
@@ -43,7 +43,7 @@ export function KnowledgePage() {
       <ErrorBox error={kbs.error ?? sources.error} />
       {!kbs.loading && !kbs.data?.length ? (
         <Empty title="No knowledge bases" action={canAdmin ? <button className="btn primary" onClick={() => setCreating(true)}>Create a knowledge base</button> : undefined}>
-          Add runbooks, docs or policies so teammates can cite them.
+          Add runbooks, docs or policies so bots can cite them.
         </Empty>
       ) : (
         <>

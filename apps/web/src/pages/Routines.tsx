@@ -27,7 +27,7 @@ export function RoutinesPage() {
       <div className="page-head">
         <div>
           <h1>Routines</h1>
-          <p>Scheduled work. Each routine is a durable schedule that sends its prompt to a teammate; missed runs during downtime are caught up once, never doubled.</p>
+          <p>Scheduled work. Each routine is a durable schedule that sends its prompt to a bot; missed runs during downtime are caught up once, never doubled.</p>
         </div>
         {canWrite && (
           <button className="btn primary" onClick={() => setEditing("new")}>
@@ -46,7 +46,7 @@ export function RoutinesPage() {
             <thead>
               <tr>
                 <th>Routine</th>
-                <th>Teammate</th>
+                <th>Bot</th>
                 <th>Schedule</th>
                 <th>Last run</th>
                 <th />
@@ -131,7 +131,7 @@ function RoutineDialog({ routine, bots, onClose, onSaved }: { routine: Routine |
         <h2>{routine ? "Edit routine" : "New routine"}</h2>
         {!routine && (
           <label className="field">
-            <span>Teammate</span>
+            <span>Bot</span>
             <select className="select" value={f.botId} onChange={(e) => setF({ ...f, botId: e.target.value })}>
               {bots.map((b) => (
                 <option key={b.id} value={b.id}>

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 
 /** auto follows the system: "her" by day, "dusk" when the system is dark. */
-export type Theme = "auto" | "her" | "dusk" | "wire";
+export type Theme = "auto" | "her" | "dusk" | "eclipse" | "synapse" | "nebula" | "wire";
+export const THEMES: readonly Theme[] = ["auto", "her", "dusk", "eclipse", "synapse", "nebula", "wire"];
 export type ResolvedTheme = Exclude<Theme, "auto">;
 
 const KEY = "orrery.theme";
@@ -9,7 +10,7 @@ const KEY = "orrery.theme";
 export function readTheme(): Theme {
   try {
     const t = localStorage.getItem(KEY);
-    return t === "her" || t === "dusk" || t === "wire" ? t : "auto";
+    return THEMES.includes(t as Theme) ? (t as Theme) : "auto";
   } catch {
     return "auto";
   }

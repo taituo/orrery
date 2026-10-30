@@ -16,12 +16,12 @@ export function ApprovalsPage() {
       <div className="page-head">
         <div>
           <h1>Approvals</h1>
-          <p>Tool calls your policies send to a human. Teammates keep their place in the turn while they wait; the options are exactly the ones the agent offered.</p>
+          <p>Tool calls your policies send to a human. Bots keep their place in the turn while they wait; the options are exactly the ones the agent offered.</p>
         </div>
       </div>
       <ErrorBox error={q.error} />
       {!q.loading && !list.length ? (
-        <Empty title="Nothing is waiting on you">When a teammate asks to run something your policy marks for review, it shows up here and in the conversation.</Empty>
+        <Empty title="Nothing is waiting on you">When a bot asks to run something your policy marks for review, it shows up here and in the conversation.</Empty>
       ) : (
         <div className="panel">
           {list.map((a) => {

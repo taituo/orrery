@@ -33,6 +33,8 @@ export interface WorkflowGateway {
   startIngest(sourceId: string): Promise<void>;
   ensureBotSchedules(bot: Bot): Promise<void>;
   consolidateNow(teamId: string, botId: string): Promise<void>;
+  /** Stop computers that are idle or belong to archived bots, now rather than at the next sweep. */
+  reapComputers(): Promise<void>;
 }
 
 export class TemporalWorkflowGateway implements WorkflowGateway {
@@ -144,6 +146,11 @@ export class TemporalWorkflowGateway implements WorkflowGateway {
       workflowIdConflictPolicy: "USE_EXISTING",
     });
   }
+
+  async reapComputers(): Promise<void> {
+    // The janitor schedule is created by the workers; before that there is nothing to reap.
+    await this.client.schedule.getHandle(workflowIds.computerJanitor()).trigger(ScheduleOverlapPolicy.BUFFER_ONE).catch(() => undefined);
+  }
 }
 
 /** In-memory implementation for tests and the offline prototype. */
@@ -191,5 +198,8 @@ export class RecordingWorkflowGateway implements WorkflowGateway {
   }
   async consolidateNow(teamId: string, botId: string) {
     this.rec("consolidateNow", teamId, botId);
+  }
+  async reapComputers() {
+    this.rec("reapComputers");
   }
 }

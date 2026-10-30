@@ -125,6 +125,8 @@ export const EnvSchema = z.object({
   COMPUTER_IMAGE: z.string().default("ghcr.io/orrery/computer:latest"),
   COMPUTER_RUNTIME_CLASS: z.string().optional(),
   COMPUTER_STORAGE_CLASS: z.string().optional(),
+  /** Comma-separated image pull secrets (in the computers namespace) for bot computer pods. */
+  COMPUTER_IMAGE_PULL_SECRETS: z.string().optional(),
   COMPUTER_KIRO_SECRET: z.string().default("orrery-kiro"),
   COMPUTER_STATIC_URL: z.string().optional(),
   KIRO_CLI_PATH: z.string().default("kiro-cli"),

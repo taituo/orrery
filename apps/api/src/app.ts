@@ -229,6 +229,7 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
     const bot = await mustBot(p, c.req.param("id")!);
     await bots.update(db, p.teamId, bot.id, { status: "archived" });
     await workflows.setPaused(bot.id, bot.teamId, true);
+    await workflows.reapComputers(); // give its computer's capacity back now, not in an hour
     await log(p, "bot.archive", bot.id);
   });
   route("get", "/v1/bots/:id/core-memory", { summary: "Core memory blocks", tag: "memory" }, async (c, { p }) => memory.coreMemory((await mustBot(p, c.req.param("id")!)).id));

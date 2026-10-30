@@ -2,10 +2,20 @@ import { useState } from "react";
 import { Link } from "react-router";
 import type { ApiToken, Principal } from "../api";
 import { auth, useMock } from "../api";
-import { Empty, ErrorBox, Seg } from "../components/ui";
+import { Empty, ErrorBox } from "../components/ui";
 import { relTime } from "../lib/format";
 import { useApi, useCan, useLoad } from "../lib/hooks";
 import { useTheme, type Theme } from "../lib/theme";
+
+const LOOKS: Array<{ value: Theme; label: string; what: string }> = [
+  { value: "auto", label: "Automatic", what: "Warm by day, Dusk when your system is dark" },
+  { value: "her", label: "Warm", what: "Coral light, slowly moving" },
+  { value: "dusk", label: "Dusk", what: "The same room at night" },
+  { value: "eclipse", label: "Eclipse", what: "A ring of fire that churns while bots work" },
+  { value: "synapse", label: "Synapse", what: "Filaments that fire while bots think" },
+  { value: "nebula", label: "Nebula", what: "A glass planet stirring the dark" },
+  { value: "wire", label: "Wireframe", what: "Plain white, black lines, nothing moves" },
+];
 
 const KNOWN_CREDENTIALS: Array<{ name: string; what: string }> = [
   { name: "KIRO_API_KEY", what: "Kiro bots (Pro, Pro+, Pro Max or Power plan)" },
@@ -34,21 +44,16 @@ export function SettingsPage() {
         <div className="panel-head">
           <strong>Appearance</strong>
         </div>
-        <div className="panel-body stack">
-          <Seg<Theme>
-            label="Theme"
-            value={theme}
-            onChange={setTheme}
-            options={[
-              { value: "auto", label: "Automatic" },
-              { value: "her", label: "Warm" },
-              { value: "dusk", label: "Dusk" },
-              { value: "wire", label: "Wireframe" },
-            ]}
-          />
-          <p className="small muted" style={{ margin: 0 }}>
-            Automatic is warm by day and dusk when your system is dark. Wireframe is plain white, with no background animation.
-          </p>
+        <div className="panel-body">
+          <div className="looks" role="radiogroup" aria-label="Look">
+            {LOOKS.map((l) => (
+              <button key={l.value} className={`look ${l.value}`} role="radio" aria-checked={theme === l.value} onClick={() => setTheme(l.value)}>
+                <span className="look-preview" aria-hidden />
+                <span className="look-name">{l.label}</span>
+                <span className="look-what">{l.what}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       <div className="panel">

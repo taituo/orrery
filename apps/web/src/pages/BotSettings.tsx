@@ -105,7 +105,7 @@ export function BotSettingsPage() {
     <div className="page">
       <div className="page-head">
         <div>
-          <h1>{isNew ? "New teammate" : `${f.name} settings`}</h1>
+          <h1>{isNew ? "New bot" : `${f.name} settings`}</h1>
           <p>{isNew ? "Give it a job, an inference engine, and the guardrails it works within." : "Changes apply from the next turn. Running turns keep the settings they started with."}</p>
         </div>
         {!isNew && isAdmin && (
@@ -130,7 +130,7 @@ export function BotSettingsPage() {
       <ErrorBox error={err ?? refs.error} />
       <fieldset disabled={ro} style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="form-grid">
-          <Section title="Identity" help="How the teammate introduces itself and what it's for.">
+          <Section title="Identity" help="How the bot introduces itself and what it's for.">
             <div className="two">
               <label className="field">
                 <span>Name</span>
@@ -391,10 +391,10 @@ export function BotSettingsPage() {
             </label>
           </Section>
 
-          <Section title="Computer" help="Each teammate gets a sandboxed pod with a persistent home directory, where Kiro runs and keeps its workspace.">
+          <Section title="Computer" help="Each bot gets a sandboxed pod with a persistent home directory, where Kiro runs and keeps its workspace.">
             <label className="check">
               <input type="checkbox" checked={f.computer.enabled} onChange={(e) => set("computer", { ...f.computer, enabled: e.target.checked })} />
-              Give this teammate a computer
+              Give this bot a computer
             </label>
             {f.computer.enabled && (
               <>
@@ -435,7 +435,7 @@ export function BotSettingsPage() {
             )}
           </Section>
 
-          <Section title="Memory" help="Long-term memory is extracted after each turn, screened for secrets, and reconciled with what the teammate already knows.">
+          <Section title="Memory" help="Long-term memory is extracted after each turn, screened for secrets, and reconciled with what the bot already knows.">
             <label className="check">
               <input type="checkbox" checked={f.memory.enabled} onChange={(e) => set("memory", { ...f.memory, enabled: e.target.checked })} />
               Remember things between conversations
@@ -454,7 +454,7 @@ export function BotSettingsPage() {
                   <label className="field">
                     <span>Shared with</span>
                     <select className="select" value={f.memory.shareScope} onChange={(e) => set("memory", { ...f.memory, shareScope: e.target.value as "bot" | "team" })}>
-                      <option value="bot">Only this teammate</option>
+                      <option value="bot">Only this bot</option>
                       <option value="team">Also read the team's shared memories</option>
                     </select>
                   </label>
@@ -467,7 +467,7 @@ export function BotSettingsPage() {
             )}
           </Section>
 
-          <Section title="Knowledge and tools" help="Knowledge bases it can search, extra MCP servers, and teammates it can hand work to.">
+          <Section title="Knowledge and tools" help="Knowledge bases it can search, extra MCP servers, and bots it can hand work to.">
             <div className="field">
               <span>Knowledge bases</span>
               <div className="row wrap">
@@ -529,14 +529,14 @@ export function BotSettingsPage() {
         <div className="sticky-actions">
           {!isNew && (
             <button className="btn danger" style={{ marginRight: "auto" }} onClick={() => void api.archiveBot(botId!).then(() => (toast(`${f.name} archived.`), nav("/")))}>
-              Archive teammate
+              Archive bot
             </button>
           )}
           <button className="btn ghost" onClick={() => nav(-1)}>
             Cancel
           </button>
           <button className="btn primary" disabled={!f.name || saving} onClick={() => void save()}>
-            {saving ? "Saving…" : isNew ? "Create teammate" : "Save settings"}
+            {saving ? "Saving…" : isNew ? "Create bot" : "Save settings"}
           </button>
         </div>
       )}

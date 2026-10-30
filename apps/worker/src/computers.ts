@@ -104,6 +104,16 @@ export function gatewayToken(env: Pick<Env, "GATEWAY_TOKEN_SECRET">, computerId:
   return signToken({ sub: computerId, aud: GATEWAY_TOKEN_AUDIENCE, exp: Math.floor(Date.now() / 1000) + ttlSec }, gatewayKeyFor(env.GATEWAY_TOKEN_SECRET, computerId));
 }
 
+/** Why a pod is not running yet, in words a person can act on (null when it is just starting). */
+export function podWaitReason(pod: k8s.V1Pod | null): string | null {
+  if (!pod) return "the pod does not exist yet";
+  const unscheduled = pod.status?.conditions?.find((c) => c.type === "PodScheduled" && c.status === "False");
+  if (unscheduled) return `the cluster has no room for it (${unscheduled.message ?? unscheduled.reason ?? "unschedulable"}): free capacity, add a node or use a smaller computer size`;
+  const waiting = pod.status?.containerStatuses?.find((c) => c.state?.waiting?.reason && c.state.waiting.reason !== "ContainerCreating")?.state?.waiting;
+  if (waiting) return `${waiting.reason}${waiting.message ? `: ${waiting.message}` : ""}`;
+  return null;
+}
+
 async function waitReady(httpBase: string | (() => Promise<string | null>), timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let last = "";
@@ -257,9 +267,10 @@ export function computerManifests(bot: Bot, env: Env, opts: { cilium?: boolean; 
   // The computer's own secrets: its gateway key and the agent credentials it may use.
   const secretEnv: Record<string, string> = { ...(opts.secretEnv ?? {}), GATEWAY_TOKEN_KEY: gatewayKeyFor(env.GATEWAY_TOKEN_SECRET, id) };
   const secretDigest = createHash("sha256").update(JSON.stringify(Object.entries(secretEnv).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
+  const pullSecrets = (env.COMPUTER_IMAGE_PULL_SECRETS ?? "").split(",").map((x) => x.trim()).filter(Boolean);
   const specHash = createHash("sha256")
     // Credentials are part of the spec (as a digest): changing one rolls the pod before the next turn.
-    .update(JSON.stringify({ image, size: bot.computer.size, kind, net: bot.computer.network, home: bot.computer.persistentHome, rc: env.COMPUTER_RUNTIME_CLASS ?? null, agentEnv, secretDigest }))
+    .update(JSON.stringify({ image, size: bot.computer.size, kind, net: bot.computer.network, home: bot.computer.persistentHome, rc: env.COMPUTER_RUNTIME_CLASS ?? null, agentEnv, secretDigest, ...(pullSecrets.length ? { pullSecrets } : {}) }))
     .digest("hex")
     .slice(0, 16);
 
@@ -303,6 +314,7 @@ export function computerManifests(bot: Bot, env: Env, opts: { cilium?: boolean; 
     metadata: { name, namespace: ns, labels, annotations: { "orrery.dev/spec-hash": specHash } },
     spec: {
       ...(env.COMPUTER_RUNTIME_CLASS ? { runtimeClassName: env.COMPUTER_RUNTIME_CLASS } : {}),
+      ...(pullSecrets.length ? { imagePullSecrets: pullSecrets.map((n) => ({ name: n })) } : {}),
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       restartPolicy: "Always",
@@ -422,10 +434,13 @@ export class KubernetesComputerProvider implements ComputerProvider {
       await this.api.patch(obj, undefined, undefined, "orrery-computer-manager", true, k8s.PatchStrategy.ServerSideApply);
     }
     // Poll the pod directly: its Service has no endpoints until it is ready.
+    let why: string | null = null;
     await waitReady(async () => {
       const pod = await this.core.readNamespacedPod({ name, namespace: ns }).catch(() => null);
+      why = podWaitReason(pod);
       return pod?.status?.podIP ? `http://${pod.status.podIP}:7777` : null;
     }, 180_000).catch((err: unknown) => {
+      if (why && isOrreryError(err) && err.message.startsWith("bot computer did not become ready")) err = new OrreryError(err.code, `bot computer did not become ready: ${why}`, { retryable: err.retryable, cause: err });
       void computers.setStatus(this.db, id, "failed").catch(() => undefined);
       throw err;
     });

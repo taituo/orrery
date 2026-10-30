@@ -107,6 +107,67 @@
   --terminal-ink: #fbe3da;
   color-scheme: dark;
 }
+:root[data-theme="eclipse"],
+:root[data-theme="synapse"],
+:root[data-theme="nebula"] {
+  --bg: #05030a;
+  --ink: #f4eef0;
+  --ink-2: #b9aeb6;
+  --ink-3: #82767f;
+  --glass: rgba(16, 12, 20, 0.5);
+  --glass-2: rgba(20, 15, 26, 0.84);
+  --glass-3: rgba(255, 255, 255, 0.06);
+  --well: rgba(255, 255, 255, 0.07);
+  --well-2: rgba(255, 255, 255, 0.12);
+  --sheen: inset 0 1px 0 rgba(255, 255, 255, 0.09), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --on-shader: #fff7f2;
+  --on-shader-2: rgba(255, 240, 232, 0.8);
+  --glow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 4px 30px rgba(0, 0, 0, 0.65);
+  --solid: rgba(18, 13, 22, 0.97);
+  --shadow: 0 36px 90px -30px rgba(0, 0, 0, 0.85), 0 10px 30px -16px rgba(0, 0, 0, 0.6);
+  --shadow-sm: 0 14px 34px -18px rgba(0, 0, 0, 0.75);
+  --blur: saturate(150%) blur(30px);
+  --ok: #7fd1a8;
+  --warn: #f0a85e;
+  --bad: #ff8a7a;
+  --terminal: rgba(0, 0, 0, 0.5);
+  --terminal-ink: #f1e9ec;
+  color-scheme: dark;
+}
+/* eclipse: a ring of fire around a dark sun. Ember accent. */
+:root[data-theme="eclipse"] {
+  --accent: #ff7a4d;
+  --accent-2: #ffb27a;
+  --accent-ink: #1a0905;
+  --accent-wash: rgba(255, 122, 77, 0.16);
+  --glass: rgba(12, 8, 11, 0.66);
+}
+/* synapse: a nervous system that fires while bots think. Electric violet. */
+:root[data-theme="synapse"] {
+  --accent: #9b7bff;
+  --accent-2: #c3b1ff;
+  --accent-ink: #0d0720;
+  --accent-wash: rgba(155, 123, 255, 0.18);
+  --ink: #eef0ff;
+  --ink-2: #b0b3d6;
+  --ink-3: #7c7fa6;
+  --glass: rgba(10, 8, 26, 0.6);
+  --glass-2: rgba(14, 12, 34, 0.86);
+  --solid: rgba(12, 10, 30, 0.97);
+}
+/* nebula: a glass planet stirring indigo and coral. */
+:root[data-theme="nebula"] {
+  --accent: #ff7a59;
+  --accent-2: #8a9bff;
+  --accent-ink: #1a0905;
+  --accent-wash: rgba(255, 122, 89, 0.16);
+  --ink: #eef1ff;
+  --ink-2: #aab2d8;
+  --ink-3: #747da6;
+  --glass: rgba(8, 10, 26, 0.62);
+  --glass-2: rgba(12, 14, 34, 0.86);
+  --solid: rgba(10, 12, 30, 0.97);
+}
 :root[data-theme="wire"] {
   --bg: #ffffff;
   --ink: #000000;
@@ -185,6 +246,31 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .backdrop { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 .backdrop > * { position: absolute; inset: 0; width: 100% !important; height: 100% !important; }
 :root[data-theme="wire"] .backdrop { display: none; }
+/* Far stars for the night rooms: a few fixed points of light, no motion. */
+.backdrop .stars {
+  background:
+    radial-gradient(1px 1px at 12% 18%, #fff9 50%, transparent 51%),
+    radial-gradient(1px 1px at 27% 72%, #fff6 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 41% 9%, #fffa 50%, transparent 51%),
+    radial-gradient(1px 1px at 58% 88%, #fff5 50%, transparent 51%),
+    radial-gradient(1px 1px at 66% 31%, #fff7 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 79% 61%, #fff8 50%, transparent 51%),
+    radial-gradient(1px 1px at 88% 14%, #fff6 50%, transparent 51%),
+    radial-gradient(1px 1px at 93% 83%, #fff5 50%, transparent 51%),
+    radial-gradient(1px 1px at 6% 52%, #fff6 50%, transparent 51%),
+    radial-gradient(1px 1px at 34% 44%, #fff4 50%, transparent 51%);
+  mix-blend-mode: screen;
+  opacity: 0.8;
+}
+/* Someone is waiting on you: a slow breath of the accent from the bottom of the room. */
+.backdrop .backdrop-alert {
+  background: radial-gradient(120% 60% at 50% 110%, color-mix(in srgb, var(--accent) 55%, transparent), transparent 70%);
+  mix-blend-mode: screen;
+  transition: opacity 0.8s;
+}
+.backdrop .backdrop-alert::after { content: ""; position: absolute; inset: 0; background: inherit; animation: breathe-room 4.2s ease-in-out infinite; }
+@keyframes breathe-room { 0%, 100% { opacity: 0; } 50% { opacity: 0.9; } }
+:root[data-theme="her"] .backdrop .backdrop-alert, :root:not([data-theme]) .backdrop.her .backdrop-alert { mix-blend-mode: soft-light; }
 .glass {
   background: var(--glass);
   backdrop-filter: var(--blur);
@@ -233,6 +319,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .panel-body { padding: 14px 20px 20px; }
 .panel-body > p { max-width: 80ch; }
 .panel + .panel { margin-top: 14px; }
+.core-grid > .panel, .two > .panel, .three > .panel { margin-top: 0; }
 
 /* ------------------------------------------------------------------ controls */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 38px; padding: 0 18px; border: 0; background: var(--well); border-radius: 999px; cursor: pointer; white-space: nowrap; font-weight: 500; text-decoration: none; color: var(--ink); transition: background 0.15s, transform 0.15s, box-shadow 0.15s; }
@@ -487,7 +574,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .rules td, .rules th { padding: 4px 8px 4px 0; text-align: left; }
 .rules th { color: var(--ink-3); font-weight: 400; }
 .rules .input, .rules .select { min-height: 34px; padding: 5px 12px; }
-.sticky-actions { position: sticky; bottom: -56px; margin: 0 -40px -56px; padding: 16px 40px 22px; display: flex; gap: 8px; justify-content: flex-end; background: var(--solid); box-shadow: 0 -18px 30px -24px rgba(90, 30, 20, 0.35); border-top: var(--panel-border); border-radius: 0 0 var(--r-xl) var(--r-xl); }
+.sticky-actions { position: sticky; z-index: 5; bottom: -56px; margin: 0 -40px -56px; padding: 16px 40px 22px; display: flex; gap: 8px; justify-content: flex-end; background: var(--solid); box-shadow: 0 -18px 30px -24px rgba(90, 30, 20, 0.35); border-top: var(--panel-border); border-radius: 0 0 var(--r-xl) var(--r-xl); }
 .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px 0; }
 .setting-row + .setting-row { box-shadow: inset 0 1px 0 var(--well); }
 .token-once { background: var(--well); border-radius: var(--r); padding: 14px; font-family: var(--mono); font-size: 13.5px; word-break: break-all; }
@@ -521,6 +608,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   :root { --gap: 10px; }
   .shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .rail { display: none; }
+  .rail-close { margin-right: 14px; }
   .rail.open { display: flex; position: fixed; z-index: 40; inset: var(--gap); width: auto; background: var(--glass-2); }
   .btn.mobile-only, .mobile-only { display: inline-flex; }
   .mobile-bar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 22px; }
@@ -544,3 +632,23 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .table.responsive td { display: block; padding: 2px 12px; background: none !important; }
   .table.responsive .num { text-align: left; }
 }
+
+/* ------------------------------------------------------------------ looks (appearance picker) */
+.looks { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .looks { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .looks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.look { display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 12px; border: 0; border-radius: var(--r-lg); background: var(--well); color: var(--ink); text-align: left; cursor: pointer; font: inherit; transition: transform 0.2s, background 0.2s; }
+.look:hover { transform: translateY(-2px); }
+.look[aria-checked="true"] { background: var(--glass-2); box-shadow: 0 0 0 2px var(--accent), var(--shadow-sm); }
+.look-preview { display: block; height: 78px; border-radius: 14px; margin-bottom: 6px; overflow: hidden; position: relative; }
+.look-name { font-weight: 500; padding: 0 4px; }
+.look-what { font-size: 12.5px; color: var(--ink-2); padding: 0 4px; line-height: 1.35; }
+.look.auto .look-preview { background: linear-gradient(105deg, #f38463 0 50%, #3a1719 50% 100%); }
+.look.her .look-preview { background: radial-gradient(80% 90% at 30% 30%, #f9b99c, transparent 60%), radial-gradient(70% 80% at 80% 70%, #dd4330, transparent 70%), #f38463; }
+.look.dusk .look-preview { background: radial-gradient(70% 80% at 70% 60%, #b8463a, transparent 70%), radial-gradient(60% 70% at 20% 30%, #5a1f22, transparent 70%), #1d0f13; }
+.look.eclipse .look-preview { background: radial-gradient(circle at 56% 50%, #05030a 0 21px, #fff6ee 23px, #ffb27a 25px, #ff5a3c 28px, rgba(138, 31, 90, 0.6) 33px, transparent 42px), #05030a; }
+.look.synapse .look-preview { background: radial-gradient(3px 3px at 30% 40%, #fff, transparent), radial-gradient(3px 3px at 72% 62%, #fff, transparent), radial-gradient(40% 50% at 30% 40%, rgba(123, 77, 255, 0.7), transparent 70%), radial-gradient(45% 55% at 72% 62%, rgba(123, 77, 255, 0.55), transparent 70%), #04030c; }
+.look.nebula .look-preview { background: radial-gradient(circle at 66% 52%, rgba(255, 230, 214, 0.25) 0 2px, transparent 3px), radial-gradient(circle at 68% 54%, #8a5cff 0, #3d5cff 22px, #0a0a1a 30px, transparent 31px), radial-gradient(60% 40% at 40% 70%, rgba(255, 122, 89, 0.55), transparent 70%), #04050d; }
+.look.wire .look-preview { background: #fff; box-shadow: inset 0 0 0 1.5px #000; }
+:root[data-theme="wire"] .look { border: 1px solid #000; background: #fff; }
+:root[data-theme="wire"] .look[aria-checked="true"] { box-shadow: 0 0 0 2px #000; }
