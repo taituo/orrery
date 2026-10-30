@@ -7,6 +7,12 @@
 #
 # No Kiro account? Run against the wire-faithful mock Kiro CLI:
 #   ORRERY_COMPUTER_TARGET=computer-mock docker compose up --build
+#
+# OpenCode instead of Kiro (the computer image has both):
+#   ORRERY_AGENT_KIND=opencode docker compose up --build
+# with model credentials in .env (ANTHROPIC_API_KEY, OPENAI_API_KEY, …) or an OpenCode config in
+# OPENCODE_CONFIG_CONTENT; `--profile fake-models` adds a fake OpenAI-compatible model server
+# (http://fake-models:8000/v1) for trials without any model account. See docs/OPENCODE.md.
 name: orrery
 
 x-build: &build
@@ -96,12 +102,30 @@ services:
       GATEWAY_TOKEN_SECRET: ${GATEWAY_TOKEN_SECRET:-local-gateway-secret-0123456789}
       AGENT_KIND: ${ORRERY_AGENT_KIND:-kiro-v3}
       KIRO_API_KEY: ${KIRO_API_KEY:-}
+      # OpenCode (AGENT_KIND=opencode). On Kubernetes the workers generate the config per bot;
+      # here, unset means Orrery's default (every tool call is decided by the bot's policy).
+      OPENCODE_CONFIG_CONTENT: ${OPENCODE_CONFIG_CONTENT:-}
+      OPENCODE_DISABLE_PROJECT_CONFIG: ${OPENCODE_DISABLE_PROJECT_CONFIG:-true}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes: [computer-home:/home/agent]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7777/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 3s
       retries: 40
+
+  # Fake OpenAI-compatible model server (tests and trials): `docker compose --profile fake-models up`.
+  fake-models:
+    profiles: [fake-models]
+    build: { <<: *build, target: computer-mock }
+    command: ["node", "/opt/orrery/mock/fake-models.js", "8000"]
+    environment:
+      HOST: 0.0.0.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/v1/models').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 3s
+      retries: 20
 
   web:
     build: { <<: *build, target: web }

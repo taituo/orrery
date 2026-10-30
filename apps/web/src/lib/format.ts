@@ -16,8 +16,9 @@ export const num = (n: number | undefined) => (n === undefined ? "–" : n >= 1_
 export const pct = (n: number | undefined) => (n === undefined ? "–" : `${Math.round(n * 100)}%`);
 export const duration = (ms: number | undefined) => (ms === undefined ? "–" : ms < 1000 ? `${ms} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`);
 
-export function engineLabel(primary: { kind: string; engine?: string; providerId?: string; model?: string; command?: string }): string {
+export function engineLabel(primary: { kind: string; engine?: string; providerId?: string; model?: string; modelId?: string; command?: string }): string {
   if (primary.kind === "kiro-acp") return primary.engine === "v2" ? "Kiro CLI v2" : primary.engine === "auto" ? "Kiro CLI (auto)" : "Kiro CLI V3";
+  if (primary.kind === "opencode-acp") return "OpenCode";
   if (primary.kind === "openai") return `${primary.providerId} / ${primary.model}`;
   return `ACP: ${primary.command}`;
 }

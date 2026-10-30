@@ -38,12 +38,13 @@ async function startHarness(generation: "v3" | "v2" = "v3"): Promise<Harness> {
   let promptCount = 0;
   let kill: () => void = () => undefined;
   const workspace = mkdtempSync(path.join(tmpdir(), "gw-ws-"));
+  const stateDir = mkdtempSync(path.join(tmpdir(), "gw-state-")); // agent sessions survive its restarts
   const gateway = new AcpGateway({
     workspaceRoots: [workspace],
     defaultCwd: workspace,
     spawnAgent: (): AgentProcess => {
       const [down, agentSide] = memoryTransportPair();
-      const agent = new MockKiroAgent(agentSide, { generation });
+      const agent = new MockKiroAgent(agentSide, { generation, stateDir });
       agent.peer.tap = (dir, m) => {
         if (dir === "in" && "method" in m && m.method === "session/prompt") promptCount++;
       };
@@ -292,6 +293,22 @@ describe("ACP gateway", () => {
     expect(second.sessionId).toBe(first.sessionId);
     expect(second.createdSession).toBe(false);
     expect(foldTranscript(r2.events).assistantText).toBe("You said: two. ");
+  });
+
+  it("loads a session again after the agent process restarted between turns", async () => {
+    const h = await startHarness();
+    const deps = { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true };
+    const first = await runAcpTurn(deps, { requestKey: "k1", messageId: "m1", session, prompt: [{ type: "text", text: "one" }] }, { ...recorder(), decidePermission: allowOnce }, new AbortController().signal);
+    const epoch = h.gateway.agentEpoch;
+    h.killAgent();
+    for (let i = 0; i < 200 && (h.gateway.agentEpoch === epoch || !h.gateway.isReady); i++) await new Promise((res) => setTimeout(res, 20));
+    expect(h.agents.length).toBe(2);
+    const r2 = recorder();
+    const second = await runAcpTurn(deps, { requestKey: "k2", messageId: "m2", sessionId: first.sessionId, session, prompt: [{ type: "text", text: "two" }] }, { ...r2, decidePermission: allowOnce }, new AbortController().signal);
+    expect(second.sessionId).toBe(first.sessionId);
+    expect(second.createdSession).toBe(false);
+    expect(foldTranscript(r2.events).assistantText).toBe("You said: two. ");
+    expect(r2.events.filter((e) => e.type === "notice")).toEqual([]);
   });
 
   it("exposes status for the computer manager", async () => {

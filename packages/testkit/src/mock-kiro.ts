@@ -91,6 +91,8 @@ export function validateLaunch(argv: string[], generation: MockGeneration): { en
 export class MockKiroAgent {
   readonly peer: JsonRpcPeer;
   private readonly sessions = new Map<string, SessionState>();
+  /** Sessions persisted by an earlier process: listable and loadable, but not live until loaded (like real agents). */
+  private readonly stored = new Map<string, SessionState>();
   private readonly active = new Map<string, { abort: AbortController; steering: string[] }>();
   private clientCaps: Record<string, unknown> = {};
   readonly engine: MockGeneration;
@@ -109,6 +111,10 @@ export class MockKiroAgent {
     this.register();
   }
 
+  private allSessions(): Map<string, SessionState> {
+    return new Map([...this.stored, ...this.sessions]);
+  }
+
   private stateFile(): string | null {
     return this.opts.stateDir ? path.join(this.opts.stateDir, `mock-kiro-${this.engine}.json`) : null;
   }
@@ -117,14 +123,14 @@ export class MockKiroAgent {
     const f = this.stateFile();
     if (!f || !existsSync(f)) return;
     const data = JSON.parse(readFileSync(f, "utf8")) as SessionState[];
-    for (const s of data) this.sessions.set(s.id, s);
+    for (const s of data) this.stored.set(s.id, s);
   }
 
   private saveState(): void {
     const f = this.stateFile();
     if (!f) return;
     mkdirSync(path.dirname(f), { recursive: true });
-    writeFileSync(f, JSON.stringify([...this.sessions.values()]));
+    writeFileSync(f, JSON.stringify([...this.allSessions().values()]));
   }
 
   private configOptions(s: SessionState) {
@@ -194,8 +200,9 @@ export class MockKiroAgent {
 
     p.onRequest("session/load", async (params) => {
       const req = params as { sessionId: string; cwd: string; mcpServers?: unknown[] };
-      const s = this.sessions.get(req.sessionId);
+      const s = this.sessions.get(req.sessionId) ?? this.stored.get(req.sessionId);
       if (!s) throw new JsonRpcError(RPC_ERRORS.invalidParams, `session not found: ${req.sessionId}`);
+      this.sessions.set(s.id, s);
       if (this.engine === "v3" && !Array.isArray(req.mcpServers)) throw new JsonRpcError(RPC_ERRORS.invalidParams, "mcpServers must be re-sent on load");
       s.mcpServers = req.mcpServers ?? [];
       const replay = () => {
@@ -216,7 +223,7 @@ export class MockKiroAgent {
     p.onRequest("session/list", (params) => {
       if (this.engine !== "v3") throw new JsonRpcError(RPC_ERRORS.methodNotFound, "Method not found: session/list");
       const cwd = (params as { cwd?: string } | undefined)?.cwd;
-      return { sessions: [...this.sessions.values()].filter((s) => !cwd || s.cwd === cwd).map((s) => ({ sessionId: s.id, cwd: s.cwd, title: s.history[0]?.text.slice(0, 40) ?? null })) };
+      return { sessions: [...this.allSessions().values()].filter((s) => !cwd || s.cwd === cwd).map((s) => ({ sessionId: s.id, cwd: s.cwd, title: s.history[0]?.text.slice(0, 40) ?? null })) };
     });
 
     p.onRequest("session/fork", (params) => {
@@ -301,7 +308,7 @@ export class MockKiroAgent {
     p.onRequest("_kiro.dev/session/list", (params) => {
       if (this.engine !== "v2") throw new JsonRpcError(RPC_ERRORS.methodNotFound, "Method not found");
       const cwd = (params as { cwd: string }).cwd;
-      return { sessions: [...this.sessions.values()].filter((s) => s.cwd === cwd).map((s) => ({ sessionId: s.id, sessionName: s.history[0]?.text.slice(0, 40) ?? "", agentName: s.modeId })) };
+      return { sessions: [...this.allSessions().values()].filter((s) => s.cwd === cwd).map((s) => ({ sessionId: s.id, sessionName: s.history[0]?.text.slice(0, 40) ?? "", agentName: s.modeId })) };
     });
     p.onRequest("_kiro.dev/commands/execute", (params) => {
       if (this.engine !== "v2") throw new JsonRpcError(RPC_ERRORS.methodNotFound, "Method not found");

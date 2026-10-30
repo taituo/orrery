@@ -24,13 +24,13 @@ import {
   type TurnController,
   type TurnProgress,
 } from "@orrery/acp";
-import { approvals, bots, runs, secrets, steering, threads } from "@orrery/db";
+import { approvals, bots, outbox, runs, secrets, steering, threads, withTx } from "@orrery/db";
 import { TurnTracer } from "@orrery/observability";
 import { assessToolRisk } from "@orrery/providers";
 import { MCP_TOKEN_AUDIENCE } from "@orrery/tools";
 import type { AcpActivities, AcpTurnInput, TurnOutcome } from "@orrery/workflows";
 import { gatewayToken } from "../computers.js";
-import type { WorkerDeps } from "../context.js";
+import { deliverInbound, type WorkerDeps } from "../context.js";
 import { RunEventSink } from "../event-sink.js";
 import type { StoredRunInput } from "./agent.js";
 
@@ -98,14 +98,14 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
         teamId: p.teamId,
         userId: p.authorUserId,
         provider: input.computer.agentKind,
-        model: p.binding.kind === "kiro-acp" ? (p.binding.modelId ?? null) : (p.binding.modelId ?? null),
+        model: p.binding.modelId ?? null,
         input: p.inputParts,
         channel: thread.channel,
         traceId: stored.traceId,
       });
       const sink = await RunEventSink.open(db, { runId: p.runId, teamId: p.teamId, botId: p.botId, threadId: p.threadId }, tracer, 60, () => progress);
       let usage: UsageSnapshot = {};
-      let model: string | null = p.binding.kind === "kiro-acp" ? (p.binding.modelId ?? null) : null;
+      let model: string | null = p.binding.modelId ?? null;
       const onEvent = (e: AgentEvent) => {
         if (e.type === "usage") usage = mergeUsage(usage, e.usage);
         if (e.type === "turn.completed" && e.usage) usage = mergeUsage(usage, e.usage);
@@ -130,17 +130,44 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
       const beatTimer = setInterval(beat, 10_000);
       let savedSession: string | null = thread.acpSessionId ?? null;
 
-      // Steering: the API writes to `steering` and NOTIFYs; we inject into the live turn.
+      // Steering: the API writes to `steering` and NOTIFYs; we inject into the live turn. Guidance
+      // the agent cannot take (no steering support, or the turn is ending) is re-queued as the
+      // next turn — atomically, through the delivery outbox — never dropped.
       let controller: TurnController | null = null;
+      let steerChain: Promise<void> = Promise.resolve();
+      const runRef = { id: p.runId, teamId: p.teamId, botId: p.botId, threadId: p.threadId, channel: thread.channel };
+      const requeue = async (why: "unsupported" | "ended", ids?: number[]) => {
+        const inbound = await withTx(db, (tx) => steering.requeue(tx, runRef, ids));
+        if (!inbound.length) return;
+        const what = inbound.length === 1 ? "your message will run" : `${inbound.length} messages will run`;
+        sink.push({ type: "notice", severity: "info", title: why === "unsupported" ? `This agent can't take guidance mid-turn; ${what} as the next turn.` : `The turn ended before the guidance was applied; ${what} as the next turn.` });
+        for (const m of inbound) {
+          // Best effort now; the API's outbox relay retries if the workflow engine is unreachable.
+          await deliverInbound(deps, m)
+            .then(() => outbox.done(db, m.messageId))
+            .catch((err: unknown) => log.warn({ runId: p.runId, messageId: m.messageId, err: String(err) }, "re-queued guidance left to the outbox relay"));
+        }
+      };
+      const handleSteering = () => {
+        steerChain = steerChain
+          .then(async () => {
+            if (!controller) return;
+            if (!controller.canSteer()) return requeue("unsupported");
+            const failed: number[] = [];
+            for (const s of await steering.takePending(db, p.runId)) if (!(await controller.steer(s.parts).catch(() => false))) failed.push(s.id);
+            if (failed.length) await requeue("ended", failed);
+          })
+          .catch((err: unknown) => log.warn({ runId: p.runId, err: String(err) }, "steering failed"));
+      };
       const unsubSteer = await listener.subscribe("orrery_steering", (runId) => {
-        if (runId !== p.runId || !controller) return;
-        void (async () => {
-          for (const s of await steering.takePending(db, p.runId)) {
-            const ok = await controller!.steer(s.parts).catch(() => false);
-            if (!ok) sink.push({ type: "notice", severity: "warning", title: "This agent does not support steering a running turn; the message will be sent as the next turn." });
-          }
-        })();
+        if (runId === p.runId) handleSteering();
       });
+      // When the turn is over, guidance that is still pending becomes the next turn.
+      const drainSteering = async () => {
+        unsubSteer();
+        await steerChain;
+        await requeue("ended").catch((err: unknown) => log.warn({ runId: p.runId, err: String(err) }, "could not re-queue pending guidance"));
+      };
 
       // Approval decisions arrive via NOTIFY from the API (compare-and-set in Postgres).
       const waiters = new Map<string, () => void>();
@@ -165,11 +192,15 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
           return opt ? { outcome: "selected", optionId: opt.optionId } : { outcome: "cancelled" };
         }
 
-        // Ask a human.
-        const approvalId = newId("approval");
-        const expiresAt = new Date(Date.now() + bot.policy.approvalTimeoutMinutes * 60_000).toISOString();
+        // Ask a human. A retried attempt gets held permission requests re-delivered by the
+        // gateway: it continues with the approval already asked (or decided while no worker was
+        // attached) instead of asking twice.
+        const prior = await approvals.findForToolCall(db, p.runId, perm.toolCall.toolCallId);
+        const reuse = prior && (prior.status === "pending" || prior.status === "approved" || prior.status === "denied") ? prior : null;
+        const approvalId = reuse?.id ?? newId("approval");
+        const expiresAt = reuse?.expiresAt ?? new Date(Date.now() + bot.policy.approvalTimeoutMinutes * 60_000).toISOString();
         const decided = new Promise<void>((resolve) => waiters.set(approvalId, resolve));
-        await approvals.create(db, {
+        if (!reuse) await approvals.create(db, {
           id: approvalId,
           teamId: p.teamId,
           botId: p.botId,
@@ -187,7 +218,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
           risk: final.risk ?? risk ?? null,
           expiresAt,
         });
-        await sink.pushNow({
+        if (!reuse) await sink.pushNow({
           type: "approval.requested",
           approvalId,
           toolCall: perm.toolCall,
@@ -197,7 +228,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
           expiresAt,
         });
         const timeout = new Promise<"timeout">((resolve) => {
-          const t = setTimeout(() => resolve("timeout"), bot.policy.approvalTimeoutMinutes * 60_000);
+          const t = setTimeout(() => resolve("timeout"), Math.max(0, Date.parse(expiresAt) - Date.now()));
           t.unref();
           signal.addEventListener("abort", () => clearTimeout(t), { once: true });
         });
@@ -263,6 +294,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
             decidePermission,
             onReady: (c) => {
               controller = c;
+              handleSteering(); // guidance that arrived before the session was ready
             },
             onProgress: (pr) => {
               progress = { ...pr, computerId: input.computer.computerId };
@@ -279,6 +311,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
           },
           ctx.cancellationSignal,
         );
+        await drainSteering();
         await sink.close();
         tracer.close("completed");
         return {
@@ -292,6 +325,8 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
       } catch (err) {
         const oe = isOrreryError(err) ? err : new OrreryError("provider_unavailable", err instanceof Error ? err.message : String(err), { cause: err });
         if (oe.code !== "interrupted") sink.push({ type: "turn.failed", error: { code: oe.code, message: oe.message, retryable: oe.retryable } });
+        // A retryable failure resumes this same turn, which takes the pending guidance itself.
+        if (!oe.retryable || oe.code === "interrupted") await drainSteering();
         await sink.close();
         tracer.close("error");
         // Connection failures before the prompt was sent are safe to retry; anything after

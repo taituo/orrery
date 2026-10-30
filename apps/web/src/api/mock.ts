@@ -24,7 +24,7 @@ import { ApiError } from "./types";
 
 /**
  * In-browser implementation of the Orrery API used by the clickable prototype and by
- * `?mock=1` in development. It simulates the real event vocabulary a Kiro CLI V3 / v2 or
+ * `?mock=1` in development. It simulates the real event vocabulary a Kiro CLI V3 / v2, OpenCode or
  * OpenAI-compatible turn produces (tool calls, plans, approvals with the agent's own
  * options, steering, usage/credits, memory writes), so the UI is exercised exactly as it
  * would be against the platform.
@@ -107,6 +107,16 @@ function seedBots(): Bot[] {
       instructions: "You are Quill, a technical writer. Match the existing docs voice.",
       primary: { kind: "kiro-acp", engine: "v2", modeId: "docs-writer", modelId: "claude-sonnet-4.5", authMethod: "cli" },
       knowledgeBaseIds: ["kb_product"],
+    }),
+    mk({
+      id: "bot_patch",
+      name: "Patch",
+      avatar: "P",
+      description: "Fixes flaky tests and small bugs in the web repo. Runs OpenCode on the team's self-hosted model.",
+      instructions: "You are Patch. Reproduce first, change as little as possible, and run the affected tests before you report back.",
+      primary: { kind: "opencode-acp", modeId: "build", modelId: "orrery-local-vllm/qwen3-235b-a22b", smallModelId: "orrery-local-vllm/qwen3-30b-a3b", permissions: "orrery" },
+      computer: computer({ network: { mode: "restricted", allow: ["github.com", "registry.npmjs.org"] } }),
+      mcpServers: [{ type: "http", name: "github", url: "https://api.githubcopilot.com/mcp/", headers: [{ name: "Authorization", value: "secret://github-token" }] }],
     }),
     mk({
       id: "bot_ledger",
@@ -284,7 +294,7 @@ export class MockApi implements OrreryApi {
     if (!opts.existingMessageId) this.messages.push(userMsg);
     const scenario = forced ?? this.pickScenario(bot, text);
     const isFast = scenario === "quick";
-    const engine = bot.primary.kind === "kiro-acp" ? (bot.primary.engine === "auto" ? "v3" : bot.primary.engine) : undefined;
+    const engine = bot.primary.kind === "kiro-acp" ? (bot.primary.engine === "auto" ? "v3" : bot.primary.engine) : bot.primary.kind === "opencode-acp" ? "opencode" : undefined;
     const run: Run = {
       id: uid("run"),
       teamId: TEAM,
@@ -293,7 +303,7 @@ export class MockApi implements OrreryApi {
       triggerMessageId: userMsg.id,
       status: "running",
       provider: isFast ? "openai" : bot.primary.kind,
-      model: isFast ? (bot.routing.fast?.model ?? null) : bot.primary.kind === "openai" ? bot.primary.model : bot.primary.kind === "kiro-acp" ? (bot.primary.modelId ?? "auto") : null,
+      model: isFast ? (bot.routing.fast?.model ?? null) : bot.primary.kind === "openai" ? bot.primary.model : bot.primary.kind === "kiro-acp" ? (bot.primary.modelId ?? "auto") : bot.primary.kind === "opencode-acp" ? (bot.primary.modelId ?? null) : null,
       engine: isFast ? null : (engine ?? null),
       stopReason: null,
       usage: {},
@@ -380,7 +390,13 @@ export class MockApi implements OrreryApi {
       emitTool(id, a.kind, { title: a.title, input: a.input, ...(a.identity ? { identity: a.identity } : {}) });
       const options: Approval["options"] =
         a.options ??
-        (engine === "v2"
+        (engine === "opencode"
+          ? [
+              { optionId: "once", name: "Allow once", kind: "allow_once" },
+              { optionId: "always", name: "Always allow", kind: "allow_always" },
+              { optionId: "reject", name: "Reject", kind: "reject_once" },
+            ]
+          : engine === "v2"
           ? [
               { optionId: "allow_once", name: "Yes", kind: "allow_once" },
               { optionId: "trust_tool", name: "Trust this tool", kind: "allow_always" },
@@ -469,6 +485,10 @@ export class MockApi implements OrreryApi {
         emit({ type: "commands.available", commands: [{ name: "compact", description: "Summarize the conversation to free context" }, { name: "model", description: "Switch model", inputHint: "model id" }, { name: "context", description: "Show context usage" }, { name: "tools", description: "List available tools" }] });
         emit({ type: "mode.changed", modeId: (bot.primary as { modeId?: string }).modeId ?? "vibe" });
         emit({ type: "config.changed", options: [{ id: "model", name: "Model", type: "select", currentValue: run.model ?? "auto", options: ["auto", "claude-sonnet-4.5", "claude-haiku-4.5", "claude-opus-4.5"].map((v) => ({ value: v, name: v })) }, { id: "effortLevel", name: "Effort", type: "select", currentValue: (bot.primary as { effort?: string }).effort ?? "medium", options: ["low", "medium", "high"].map((v) => ({ value: v, name: v })) }] });
+      } else if (!isFast && bot.primary.kind === "opencode-acp") {
+        // OpenCode advertises its agents and models as session config options.
+        emit({ type: "commands.available", commands: [{ name: "init", description: "Create or update AGENTS.md" }, { name: "review", description: "Review changes" }, { name: "compact", description: "Summarize the session" }] });
+        emit({ type: "config.changed", options: [{ id: "model", name: "Model", type: "select", currentValue: run.model ?? "", options: ["orrery-local-vllm/qwen3-235b-a22b", "orrery-local-vllm/qwen3-30b-a3b", "anthropic/claude-sonnet-4-5"].map((v) => ({ value: v, name: v })) }, { id: "mode", name: "Agent", type: "select", currentValue: bot.primary.modeId ?? "build", options: ["build", "plan"].map((v) => ({ value: v, name: v })) }] });
       }
       await pause(500);
 
@@ -674,7 +694,13 @@ export class MockApi implements OrreryApi {
     const msg: Message = { id: uid("msg"), threadId, role: "user", author: { type: "user", id: ME.userId, name: ME.name ?? "You" }, parts: [{ type: "text", text: body.text }], createdAt: now(), ...(active && body.mode === "steer" ? { runId: active.run.id, meta: { steered: true } } : {}) };
     this.messages.push(msg);
     if (t.title === "New conversation") t.title = body.text.slice(0, 60);
-    if (active && body.mode === "steer") {
+    // Like the API: agents that cannot be steered get the message as the next turn.
+    const steerable = (bot.primary.kind === "kiro-acp" || bot.primary.kind === "acp") && active?.run.provider !== "openai";
+    if (active && body.mode === "steer" && !steerable) {
+      msg.runId = undefined;
+      msg.meta = undefined;
+    }
+    if (active && body.mode === "steer" && steerable) {
       active.steer.push(body.text);
       active.emit({ type: "steering", status: "queued", text: body.text });
       return { messageId: msg.id, threadId, mode: "steer", runId: active.run.id };
@@ -866,12 +892,14 @@ export class MockApi implements OrreryApi {
     { botId: "bot_scout", provider: "kiro-acp", runs: 97, inputTokens: 2_480_000, outputTokens: 101_000, credits: 22.8, costUsd: 0 },
     { botId: "bot_scout", provider: "openai", runs: 412, inputTokens: 760_000, outputTokens: 92_000, credits: 0, costUsd: 0.21 },
     { botId: "bot_quill", provider: "kiro-acp", runs: 38, inputTokens: 980_000, outputTokens: 64_000, credits: 9.1, costUsd: 0 },
+    { botId: "bot_patch", provider: "opencode-acp", runs: 64, inputTokens: 3_150_000, outputTokens: 142_000, credits: 0, costUsd: 0 },
     { botId: "bot_ledger", provider: "openai", runs: 22, inputTokens: 310_000, outputTokens: 28_000, credits: 0, costUsd: 0.08 },
   ];
   computers = async (): Promise<ComputerRow[]> => [
     { id: "cmp_bot_ada", teamId: TEAM, botId: "bot_ada", provider: "kubernetes", status: "ready", endpoint: "ws://orrery-cmp-bot-ada.orrery-computers.svc:7777/acp", agentKind: "kiro-v3", lastActiveAt: ago(1) },
     { id: "cmp_bot_scout", teamId: TEAM, botId: "bot_scout", provider: "kubernetes", status: "ready", endpoint: "ws://orrery-cmp-bot-scout.orrery-computers.svc:7777/acp", agentKind: "kiro-auto", lastActiveAt: ago(4) },
     { id: "cmp_bot_quill", teamId: TEAM, botId: "bot_quill", provider: "kubernetes", status: "stopped", endpoint: null, agentKind: "kiro-v2", lastActiveAt: ago(60 * 5) },
+    { id: "cmp_bot_patch", teamId: TEAM, botId: "bot_patch", provider: "kubernetes", status: "ready", endpoint: "ws://orrery-cmp-bot-patch.orrery-computers.svc:7777/acp", agentKind: "opencode", lastActiveAt: ago(9) },
   ];
   audit = async () => clone(this.auditLog);
   listSecrets = async () => clone(this.secrets);

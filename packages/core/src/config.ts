@@ -120,6 +120,9 @@ export const EnvSchema = z.object({
   COMPUTER_KIRO_SECRET: z.string().default("orrery-kiro"),
   COMPUTER_STATIC_URL: z.string().optional(),
   KIRO_CLI_PATH: z.string().default("kiro-cli"),
+  OPENCODE_PATH: z.string().default("opencode"),
+  /** Secret (computers namespace) exposed as env to agents that bring their own model credentials. */
+  COMPUTER_AGENT_SECRET: z.string().default("orrery-agent-env"),
   /** Used by the local computer provider to spawn an agent other than kiro-cli (tests, generic ACP). */
   LOCAL_AGENT_COMMAND: z.string().optional(),
   LOCAL_WORKSPACE_ROOT: z.string().default("/tmp/orrery-workspaces"),

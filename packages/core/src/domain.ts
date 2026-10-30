@@ -20,6 +20,28 @@ export const KiroBindingSchema = z.object({
   authMethod: z.enum(["cli", "client"]).default("cli"),
 });
 
+/**
+ * OpenCode (`opencode acp`). Models are "provider/model" ids from OpenCode's catalog (credentials
+ * via env on the bot computer, e.g. ANTHROPIC_API_KEY) or from Orrery's own OpenAI-compatible
+ * providers, which are exposed to OpenCode as `orrery-<providerId>/<model>`.
+ */
+export const OpenCodeBindingSchema = z.object({
+  kind: z.literal("opencode-acp"),
+  /** OpenCode agent (ACP session mode): "build", "plan", or a custom agent from the config. */
+  modeId: z.string().min(1).optional(),
+  /** "provider/model", e.g. "anthropic/claude-sonnet-4-5" or "orrery-local-vllm/qwen3-235b-a22b". */
+  modelId: z.string().min(1).optional(),
+  /** Model for titles/summaries inside OpenCode ("provider/model"). */
+  smallModelId: z.string().min(1).optional(),
+  /**
+   * orrery: every tool call is asked over ACP and decided by the bot's Orrery policy (default).
+   * agent: OpenCode's own permission rules apply; Orrery only sees what OpenCode asks about.
+   */
+  permissions: z.enum(["orrery", "agent"]).default("orrery"),
+  /** Extra opencode.json settings merged into the generated config (agents, formatters, LSP, …). */
+  config: z.record(z.string(), z.unknown()).optional(),
+});
+
 /** Any other ACP agent (Gemini CLI, Claude Code ACP adapter, Codex ACP, ...). */
 export const GenericAcpBindingSchema = z.object({
   kind: z.literal("acp"),
@@ -38,9 +60,10 @@ export const OpenAIBindingSchema = z.object({
   maxSteps: z.number().int().min(1).max(64).default(12),
 });
 
-export const ProviderBindingSchema = z.discriminatedUnion("kind", [KiroBindingSchema, GenericAcpBindingSchema, OpenAIBindingSchema]);
+export const ProviderBindingSchema = z.discriminatedUnion("kind", [KiroBindingSchema, OpenCodeBindingSchema, GenericAcpBindingSchema, OpenAIBindingSchema]);
 export type ProviderBinding = z.infer<typeof ProviderBindingSchema>;
 export type KiroBinding = z.infer<typeof KiroBindingSchema>;
+export type OpenCodeBinding = z.infer<typeof OpenCodeBindingSchema>;
 export type OpenAIBinding = z.infer<typeof OpenAIBindingSchema>;
 export type GenericAcpBinding = z.infer<typeof GenericAcpBindingSchema>;
 

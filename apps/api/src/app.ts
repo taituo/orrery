@@ -18,15 +18,16 @@ import {
   nowIso,
   signToken,
   verifyToken,
+  type Bot,
   type ContentPart,
   type Env,
   type InboundMessage,
   type RunEventEnvelope,
 } from "@orrery/core";
-import { approvals, audit, bots, computers, events, knowledge, messages, routines, runs, secrets, steering, threads, usage, type Db } from "@orrery/db";
+import { approvals, audit, bots, computers, events, knowledge, messages, routines, runs, secrets, steering, threads, usage, withTx, type Db } from "@orrery/db";
 import type { MemoryService } from "@orrery/memory";
 import type { KnowledgeService } from "@orrery/rag";
-import type { ProviderRegistry } from "@orrery/providers";
+import { openCodeModelProblem, type ProviderRegistry } from "@orrery/providers";
 import { langfuseTraceUrl, scoreTrace, type Telemetry } from "@orrery/observability";
 import type { Logger } from "pino";
 import { requireRole, type Authenticator, type Principal } from "./auth.js";
@@ -73,6 +74,16 @@ const SendMessageSchema = z
 const WEBHOOK_AUDIENCE = "orrery-webhook";
 
 /** Temporal client errors that mean "not reachable right now" (gRPC UNAVAILABLE / DEADLINE_EXCEEDED, connect failures). */
+/**
+ * Whether guidance can be injected into this bot's running turn. Orrery's own tool loop (OpenAI
+ * bindings) and OpenCode take no mid-turn guidance, so it becomes the next turn; for Kiro and
+ * generic ACP agents the worker finds out from the live session and re-queues if it cannot.
+ */
+function canSteer(bot: Bot, run?: { provider: string | null }): boolean {
+  if (run?.provider === "openai" || run?.provider === "opencode-acp") return false;
+  return bot.primary.kind === "kiro-acp" || bot.primary.kind === "acp";
+}
+
 function isTemporalUnavailable(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: unknown }).code ?? (err.cause as { code?: unknown } | undefined)?.code;
@@ -177,12 +188,21 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
   });
 
   /* ---------------------------------------------------------------- bots */
+  const validateProviders = (b: Pick<Bot, "primary" | "routing">) => {
+    if (b.routing.mode === "auto" && b.routing.fast && !deps.providers.has(b.routing.fast.providerId)) throw new OrreryError("bad_request", `unknown provider ${b.routing.fast.providerId}`);
+    if (b.primary.kind === "openai" && !deps.providers.has(b.primary.providerId)) throw new OrreryError("bad_request", `unknown provider ${b.primary.providerId}`);
+    if (b.primary.kind === "opencode-acp") {
+      for (const m of [b.primary.modelId, b.primary.smallModelId]) {
+        const problem = m ? openCodeModelProblem(m, deps.providers.configs) : null;
+        if (problem) throw new OrreryError("bad_request", problem);
+      }
+    }
+  };
   route("get", "/v1/bots", { summary: "List bots", tag: "bots" }, async (_c, { p }) => ({ bots: await bots.list(db, p.teamId) }));
   route("post", "/v1/bots", { summary: "Create a bot", tag: "bots", role: "admin", body: BotCreateSchema, status: 201 }, async (_c, { p, body }) => {
     const input = BotCreateSchema.parse(body);
     if (!input.policy.rules.length) input.policy.rules = defaultPolicyRules();
-    if (input.routing.mode === "auto" && input.routing.fast && !deps.providers.has(input.routing.fast.providerId)) throw new OrreryError("bad_request", `unknown provider ${input.routing.fast.providerId}`);
-    if (input.primary.kind === "openai" && !deps.providers.has(input.primary.providerId)) throw new OrreryError("bad_request", `unknown provider ${input.primary.providerId}`);
+    validateProviders(input);
     const bot = await bots.create(db, p.teamId, input);
     await workflows.ensureBotSchedules(bot).catch((err: unknown) => deps.log.warn({ err: String(err) }, "could not create bot schedules"));
     if (bot.instructions) await memory.setCoreMemory(bot.id, "persona", bot.instructions.slice(0, bot.memory.coreMemoryCharLimit), bot.memory.coreMemoryCharLimit);
@@ -195,7 +215,9 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
   });
   route("patch", "/v1/bots/:id", { summary: "Update a bot", tag: "bots", role: "admin", body: BotPatchSchema }, async (c, { p, body }) => {
     const prev = await mustBot(p, c.req.param("id")!);
-    const bot = await bots.update(db, p.teamId, prev.id, BotPatchSchema.parse(body) as never);
+    const patch = BotPatchSchema.parse(body);
+    validateProviders({ primary: patch.primary ?? prev.primary, routing: patch.routing ?? prev.routing });
+    const bot = await bots.update(db, p.teamId, prev.id, patch as never);
     if (prev.status !== bot.status && (bot.status === "paused" || prev.status === "paused")) await workflows.setPaused(bot.id, bot.teamId, bot.status === "paused");
     await log(p, "bot.update", bot.id, { fields: Object.keys(body as object) });
     return { bot };
@@ -245,15 +267,19 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
     const bot = await mustBot(p, t.botId);
     if (bot.status === "archived") throw new OrreryError("conflict", "bot is archived");
     const parts: ContentPart[] = body.parts ?? [{ type: "text", text: body.text! }];
-    if (body.mode === "steer") {
+    const author = { type: "user" as const, id: p.userId, ...(p.name ? { name: p.name } : {}) };
+    // Agents that cannot take guidance mid-turn get it as the next turn instead.
+    if (body.mode === "steer" && canSteer(bot)) {
       const active = (await runs.listForThread(db, t.id, 5)).find((r) => r.status === "running" || r.status === "waiting_approval");
-      if (active) {
-        const msg = await messages.insert(db, { teamId: p.teamId, threadId: t.id, role: "user", author: { type: "user", id: p.userId, ...(p.name ? { name: p.name } : {}) }, parts, runId: active.id, meta: { steered: true } });
-        await steering.add(db, active.id, parts, p.userId);
+      if (active && canSteer(bot, active)) {
+        const msg = await withTx(db, async (tx) => {
+          const m = await messages.insert(tx, { teamId: p.teamId, threadId: t.id, role: "user", author, parts, runId: active.id, meta: { steered: true } });
+          await steering.add(tx, active.id, parts, p.userId, m.id);
+          return m;
+        });
         return { messageId: msg.id, threadId: t.id, mode: "steer", runId: active.id };
       }
     }
-    const author = { type: "user" as const, id: p.userId, ...(p.name ? { name: p.name } : {}) };
     const { message: msg, delivered } = await deps.delivery.submit(
       { teamId: p.teamId, threadId: t.id, role: "user", author, parts },
       { threadId: t.id, botId: bot.id, teamId: p.teamId, channel: t.channel, author, parts, replyTo: null, ...(body.forceProvider ? { forceProvider: body.forceProvider } : {}) },
@@ -278,11 +304,23 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
     await log(p, "run.cancel", run.id);
     return { cancelled: ok };
   });
-  route("post", "/v1/runs/:id/steer", { summary: "Inject guidance into a running turn", tag: "runs", role: "member", body: z.object({ text: z.string().min(1).max(20000) }) }, async (c, { p, body }) => {
+  route("post", "/v1/runs/:id/steer", { summary: "Inject guidance into a running turn (or queue it as the next turn when the agent cannot be steered)", tag: "runs", role: "member", body: z.object({ text: z.string().min(1).max(20000) }) }, async (c, { p, body }) => {
     const run = await mustRun(p, c.req.param("id")!);
     if (run.status !== "running" && run.status !== "waiting_approval") throw new OrreryError("conflict", "run is not active");
-    await steering.add(db, run.id, [{ type: "text", text: body.text }], p.userId);
-    return { queued: true };
+    const parts: ContentPart[] = [{ type: "text", text: body.text }];
+    const author = { type: "user" as const, id: p.userId, ...(p.name ? { name: p.name } : {}) };
+    const bot = await mustBot(p, run.botId);
+    if (!canSteer(bot, run)) {
+      const t = await mustThread(p, run.threadId);
+      const { message, delivered } = await deps.delivery.submit({ teamId: p.teamId, threadId: t.id, role: "user", author, parts }, { threadId: t.id, botId: bot.id, teamId: p.teamId, channel: t.channel, author, parts, replyTo: null });
+      return { queued: true, mode: "queue", messageId: message.id, delivery: delivered ? "delivered" : "pending" };
+    }
+    const message = await withTx(db, async (tx) => {
+      const m = await messages.insert(tx, { teamId: p.teamId, threadId: run.threadId, role: "user", author, parts, runId: run.id, meta: { steered: true } });
+      await steering.add(tx, run.id, parts, p.userId, m.id);
+      return m;
+    });
+    return { queued: true, mode: "steer", messageId: message.id };
   });
   route("post", "/v1/runs/:id/feedback", { summary: "Rate a run (sent to Langfuse as a score)", tag: "runs", role: "member", body: z.object({ value: z.number().min(-1).max(1), comment: z.string().max(4000).optional() }) }, async (c, { p, body }) => {
     const run = await mustRun(p, c.req.param("id")!);

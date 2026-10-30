@@ -4,14 +4,17 @@
 #   api       REST/SSE API + platform MCP server + migration CLI
 #   worker    Temporal workers (agent / acp / memory roles, chosen with WORKER_QUEUES)
 #   web       the console (static files on unprivileged nginx, runtime config from env)
-#   computer  a bot computer: kiro-cli + the Orrery ACP gateway + common dev tools
+#   computer  a bot computer: kiro-cli + OpenCode + the Orrery ACP gateway + common dev tools
+#             (AGENT_KIND picks the agent: kiro-v3 | kiro-v2 | kiro-auto | opencode | acp)
 #   computer-mock  the same with a wire-faithful mock Kiro CLI instead (no Kiro account needed;
-#             for local end-to-end trials and CI)
+#             for local end-to-end trials and CI); also carries a fake OpenAI-compatible model
+#             server (/opt/orrery/mock/fake-models.js) for agents such as OpenCode
 #
 #   docker build -f deploy/docker/Dockerfile --target api -t orrery/api .
 
 ARG NODE_VERSION=22
 ARG NGINX_VERSION=1.27-alpine
+ARG OPENCODE_VERSION=1.19.5
 
 ############################################################ build
 FROM node:${NODE_VERSION}-bookworm-slim AS build
@@ -27,7 +30,8 @@ RUN pnpm --filter @orrery/api build \
  && pnpm --filter @orrery/worker build \
  && pnpm --filter @orrery/acp-gateway build \
  && pnpm --filter @orrery/web build \
- && node scripts/bundle.mjs --standalone packages/testkit/src/mock-kiro-cli.ts /out/mock/mock-kiro-cli.js
+ && node scripts/bundle.mjs --standalone packages/testkit/src/mock-kiro-cli.ts /out/mock/mock-kiro-cli.js \
+ && node scripts/bundle.mjs --standalone packages/testkit/src/serve-fake-models.ts /out/mock/fake-models.js
 # Production node_modules for the externals each bundle keeps (native Temporal core,
 # OpenTelemetry, pg, pino, ws, …), flattened so bundles resolve them from /app/node_modules.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
@@ -68,6 +72,15 @@ COPY deploy/docker/web/40-orrery-config.sh /docker-entrypoint.d/40-orrery-config
 ENV API_UPSTREAM="" ORRERY_API_URL="" ORRERY_OIDC_ISSUER="" ORRERY_OIDC_CLIENT_ID="" ORRERY_OIDC_SCOPE="openid profile email offline_access" ORRERY_OIDC_AUDIENCE="" ORRERY_LANGFUSE_URL=""
 EXPOSE 8080
 
+############################################################ opencode
+# OpenCode (`opencode acp`). The npm package's postinstall installs the native binary for this
+# platform; only that single binary is copied into the computer image.
+FROM node:${NODE_VERSION}-bookworm-slim AS opencode
+ARG OPENCODE_VERSION
+RUN npm install -g --no-fund --no-audit "opencode-ai@${OPENCODE_VERSION}" \
+ && install -D -m 0755 "$(readlink -f "$(command -v opencode)")" /out/opencode \
+ && /out/opencode --version
+
 ############################################################ computer-base
 # Bot computer without an agent: dev tools + the Orrery ACP gateway.
 FROM node:${NODE_VERSION}-bookworm-slim AS computer-base
@@ -89,6 +102,8 @@ FROM computer-base AS computer
 ARG KIRO_CLI_URL=""
 COPY deploy/docker/install-kiro-cli.sh /tmp/install-kiro-cli.sh
 RUN KIRO_CLI_URL="$KIRO_CLI_URL" bash /tmp/install-kiro-cli.sh && rm /tmp/install-kiro-cli.sh
+COPY --from=opencode /out/opencode /usr/local/bin/opencode
+ENV OPENCODE_PATH=/usr/local/bin/opencode
 USER node
 
 ############################################################ computer-mock

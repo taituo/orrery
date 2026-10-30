@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { OpenAICompatibleClient, ProviderRegistry, SystemOneClient, assessToolRisk, decideRoute, extractJson, q } from "@orrery/providers";
+import { OpenAICompatibleClient, ProviderRegistry, SystemOneClient, assessToolRisk, decideRoute, extractJson, openCodeModelIds, openCodeModelProblem, q } from "@orrery/providers";
 import { startFakeModelServer, type FakeServers } from "../src/index.js";
 
 let fake: FakeServers;
@@ -125,5 +125,17 @@ describe("configuration", () => {
     expect(env.LANGFUSE_BASE_URL).toBeUndefined();
     expect(env.OIDC_ISSUER).toBeUndefined();
     expect(env.TEMPORAL_ADDRESS).toBe("temporal:7233");
+  });
+});
+
+describe("OpenCode model ids", () => {
+  it("accepts Orrery chat providers' models and other providers' ids, rejects unknown Orrery ones", () => {
+    const configs = [openaiConfig(), { ...openaiConfig(), id: "embed-only", roles: ["embed"] as Array<"embed">, models: { chat: [], embed: "e" } }];
+    expect(openCodeModelIds(configs)).toEqual(["orrery-local/fake-small"]);
+    expect(openCodeModelProblem("orrery-local/fake-small", configs)).toBeNull();
+    expect(openCodeModelProblem("anthropic/claude-sonnet-4-5", configs)).toBeNull();
+    expect(openCodeModelProblem("orrery-local/gpt-9", configs)).toMatch(/no chat model "gpt-9"/);
+    expect(openCodeModelProblem("orrery-embed-only/e", configs)).toMatch(/not an Orrery chat provider/);
+    expect(openCodeModelProblem("no-slash", configs)).toMatch(/provider\/model/);
   });
 });

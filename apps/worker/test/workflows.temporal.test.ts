@@ -42,7 +42,16 @@ let skipReason = "";
 beforeAll(async () => {
   try {
     const cli = process.env.TEMPORAL_CLI_PATH ?? findOnPath("temporal");
-    env = await TestWorkflowEnvironment.createLocal(cli ? { server: { executable: { type: "existing-path", path: cli } } } : undefined);
+    // The SDK gives the dev server 5s to come up; on a loaded machine (the whole suite runs in
+    // parallel) that can be too short, so try a few times.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        env = await TestWorkflowEnvironment.createLocal(cli ? { server: { executable: { type: "existing-path", path: cli } } } : undefined);
+        break;
+      } catch (err) {
+        if (attempt >= 4 || !/did not start within/.test(String(err))) throw err;
+      }
+    }
   } catch (err) {
     skipReason = err instanceof Error ? err.message : String(err);
     if (process.env.TEMPORAL_TEST === "1") throw err;

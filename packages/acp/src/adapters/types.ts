@@ -27,7 +27,7 @@ import type {
   SessionNotification,
 } from "../protocol.js";
 
-export type AdapterName = "kiro-v3" | "kiro-v2" | "acp";
+export type AdapterName = "kiro-v3" | "kiro-v2" | "opencode" | "acp";
 
 export type AdapterFeature =
   | "loadSession"
@@ -64,6 +64,8 @@ export interface LaunchInput {
   binary: string;
   binding: Partial<KiroBinding> & { command?: string; args?: string[] };
   env?: Record<string, string>;
+  /** Working directory the agent should use (passed as a flag by agents that take one). */
+  cwd?: string;
 }
 
 export interface LaunchSpec {

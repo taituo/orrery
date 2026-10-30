@@ -52,6 +52,7 @@ data:
   COMPUTER_NAMESPACE: {{ include "orrery.computerNamespace" . | quote }}
   COMPUTER_IMAGE: {{ include "orrery.image" (dict "ctx" . "name" "computer") | quote }}
   COMPUTER_KIRO_SECRET: {{ default (printf "%s-kiro" (include "orrery.fullname" .)) .Values.computers.kiro.existingSecret | quote }}
+  COMPUTER_AGENT_SECRET: {{ default (printf "%s-agent-env" (include "orrery.fullname" .)) .Values.computers.agentEnv.existingSecret | quote }}
   COMPUTER_CILIUM: {{ .Values.computers.cilium | quote }}
   {{- with .Values.computers.runtimeClassName }}
   COMPUTER_RUNTIME_CLASS: {{ . | quote }}

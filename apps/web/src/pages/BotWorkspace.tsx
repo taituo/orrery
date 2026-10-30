@@ -215,6 +215,8 @@ function Composer({ bot, threadId, active, commands, onSent }: { bot: Bot; threa
   const { api, toast } = useApi();
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"steer" | "queue">("steer");
+  // OpenCode and Orrery's own tool loop take no guidance mid-turn: messages run as the next turn.
+  const steerable = (bot.primary.kind === "kiro-acp" || bot.primary.kind === "acp") && active?.provider !== "openai";
   const [busy, setBusy] = useState(false);
   const [sel, setSel] = useState(0);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -232,7 +234,7 @@ function Composer({ bot, threadId, active, commands, onSent }: { bot: Bot; threa
     if (!body || busy) return;
     setBusy(true);
     try {
-      const r = await api.sendMessage(threadId, { text: body, mode: active ? mode : "queue" });
+      const r = await api.sendMessage(threadId, { text: body, mode: active && steerable ? mode : "queue" });
       setText("");
       if (r.mode === "steer") toast(`Steering sent to ${bot.name}'s current turn.`);
       onSent();
@@ -280,7 +282,7 @@ function Composer({ bot, threadId, active, commands, onSent }: { bot: Bot; threa
           ref={ref}
           rows={2}
           value={text}
-          placeholder={bot.status === "paused" ? `${bot.name} is paused` : active ? (mode === "steer" ? `Steer ${bot.name}'s current turn` : `Queue a message for when ${bot.name} is done`) : `Message ${bot.name}`}
+          placeholder={bot.status === "paused" ? `${bot.name} is paused` : active ? (steerable && mode === "steer" ? `Steer ${bot.name}'s current turn` : `Queue a message for when ${bot.name} is done`) : `Message ${bot.name}`}
           onChange={(e) => {
             setText(e.target.value);
             setSel(0);
@@ -291,8 +293,14 @@ function Composer({ bot, threadId, active, commands, onSent }: { bot: Bot; threa
         <div className="composer-bar">
           {active ? (
             <>
-              <Seg label="When to deliver" value={mode} onChange={setMode} options={[{ value: "steer", label: "Steer now" }, { value: "queue", label: "Queue next" }]} />
-              <span className="xs faint grow">{mode === "steer" ? "Injected into the running turn without restarting it." : "Runs as the next turn."}</span>
+              {steerable ? (
+                <>
+                  <Seg label="When to deliver" value={mode} onChange={setMode} options={[{ value: "steer", label: "Steer now" }, { value: "queue", label: "Queue next" }]} />
+                  <span className="xs faint grow">{mode === "steer" ? "Injected into the running turn without restarting it." : "Runs as the next turn."}</span>
+                </>
+              ) : (
+                <span className="xs faint grow">This agent can't take guidance mid-turn; your message runs as the next turn.</span>
+              )}
               <button className="btn sm danger" onClick={() => void api.cancelRun(active.runId).catch((e: Error) => toast(e.message, "error"))}>
                 Stop
               </button>
@@ -301,7 +309,7 @@ function Composer({ bot, threadId, active, commands, onSent }: { bot: Bot; threa
             <span className="xs faint grow">Enter to send, Shift+Enter for a new line{commands.length ? ", / for agent commands" : ""}</span>
           )}
           <button className="btn primary sm" onClick={() => void send()} disabled={!text.trim() || busy || bot.status === "paused"}>
-            {active && mode === "steer" ? "Steer" : "Send"}
+            {active && steerable && mode === "steer" ? "Steer" : "Send"}
           </button>
         </div>
       </div>
@@ -331,7 +339,7 @@ function Inspector({ run, session, bot, onClose }: { run: RunView | null; sessio
                 <dt>Status</dt>
                 <dd>{{ running: "Working", waiting: "Waiting on you", completed: "Completed", failed: "Failed", cancelled: "Stopped", interrupted: "Interrupted" }[run.status]}</dd>
                 <dt>Provider</dt>
-                <dd>{run.provider === "kiro-acp" ? `Kiro over ACP (${run.engine === "v2" ? "CLI v2" : "CLI V3"})` : run.provider === "openai" ? "OpenAI-compatible" : run.provider}</dd>
+                <dd>{run.provider === "kiro-acp" ? `Kiro over ACP (${run.engine === "v2" ? "CLI v2" : "CLI V3"})` : run.provider === "opencode-acp" ? "OpenCode over ACP" : run.provider === "openai" ? "OpenAI-compatible" : run.provider}</dd>
                 {run.model && (
                   <>
                     <dt>Model</dt>

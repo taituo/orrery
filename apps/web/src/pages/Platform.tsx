@@ -65,6 +65,16 @@ function Providers() {
           <p className="muted" style={{ margin: 0 }}>Credentials come from the <code>orrery-kiro</code> Kubernetes secret on the bot computers, never from this console.</p>
         </div>
       </div>
+      <div className="panel">
+        <div className="panel-head">
+          <strong>OpenCode over ACP</strong>
+          <span className="chip">Coding agent</span>
+        </div>
+        <div className="panel-body small">
+          <p>Runs <code>opencode acp</code> in the teammate's computer behind the same gateway. It can use the OpenAI-compatible providers below (as <code>orrery-&lt;id&gt;/&lt;model&gt;</code>) or any provider OpenCode supports. With Orrery permissions every tool call is asked over ACP and decided by the teammate's policy; project config in the workspace is ignored so the agent can't grant itself permissions.</p>
+          <p className="muted" style={{ margin: 0 }}>Model credentials (<code>ANTHROPIC_API_KEY</code>, provider keys) come from the agent environment secret on the bot computers.</p>
+        </div>
+      </div>
       <ErrorBox error={q.error} />
       <div className="panel">
         <table className="table responsive">
@@ -157,7 +167,7 @@ function Usage() {
               return (
                 <tr key={`${r.botId}-${r.provider}`}>
                   <td>{bot?.name ?? r.botId}</td>
-                  <td className="small">{r.provider === "kiro-acp" ? (bot ? engineLabel(bot.primary) : "Kiro") : "OpenAI-compatible"}</td>
+                  <td className="small">{r.provider === "kiro-acp" || r.provider === "opencode-acp" ? (bot ? engineLabel(bot.primary) : r.provider === "kiro-acp" ? "Kiro" : "OpenCode") : r.provider === "acp" ? "ACP agent" : "OpenAI-compatible"}</td>
                   <td className="num">{num(r.runs)}</td>
                   <td>
                     <div className="row">
@@ -210,7 +220,7 @@ function Computers() {
               <tr key={c.id}>
                 <td className="mono small">{c.id}</td>
                 <td>{c.botId ? (q.data!.bots.get(c.botId)?.name ?? c.botId) : "Shared"}</td>
-                <td className="small">{{ "kiro-v3": "Kiro CLI V3", "kiro-v2": "Kiro CLI v2", "kiro-auto": "Kiro CLI (detect)", acp: "ACP agent" }[c.agentKind] ?? c.agentKind}</td>
+                <td className="small">{{ "kiro-v3": "Kiro CLI V3", "kiro-v2": "Kiro CLI v2", "kiro-auto": "Kiro CLI (detect)", opencode: "OpenCode", acp: "ACP agent" }[c.agentKind] ?? c.agentKind}</td>
                 <td>
                   <span className={`chip ${c.status === "ready" ? "green" : c.status === "failed" ? "red" : "dashed"}`}>{c.status}</span>
                 </td>

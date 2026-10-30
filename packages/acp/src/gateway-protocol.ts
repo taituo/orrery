@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { SessionConfigOption, SessionModeState, SessionModelState } from "./protocol.js";
 
 /**
@@ -25,32 +26,63 @@ export const GATEWAY_METHODS = {
 
 export const GATEWAY_TOKEN_AUDIENCE = "orrery-acp-gateway";
 
+/**
+ * Per-computer token key, derived from the platform's gateway secret. A computer only ever
+ * holds its own key, so an agent that reads its environment can reach nothing but the gateway
+ * it already runs behind.
+ */
+export function gatewayKeyFor(masterSecret: string, computerId: string): string {
+  return createHmac("sha256", masterSecret).update(`orrery-gateway-key:${computerId}`).digest("base64url");
+}
+
 /** JSON-RPC error codes used by the gateway (server-defined range). */
 export const GATEWAY_ERRORS = {
   /** The agent process restarted; in-flight prompts were lost. Resumable by re-prompting manually. */
   agentRestarted: -32098,
   /** No prompt result is known for this request key (gateway restarted or result expired). */
   unknownRequestKey: -32097,
-  /** The agent cannot start (e.g. kiro-cli is not signed in). `data.reason` = AgentFailure code. */
+  /** The agent cannot start (e.g. kiro-cli is not signed in, invalid OpenCode config). `data.reason` = AgentFailure code. */
   agentUnavailable: -32096,
 } as const;
 
 /** Why the agent process failed to start, derived from its exit and stderr. */
 export interface AgentFailure {
-  code: "agent_auth_required" | "agent_start_failed";
+  /**
+   * agent_auth_required / agent_config_invalid won't fix themselves by restarting the agent;
+   * agent_start_failed might (crash, resource pressure).
+   */
+  code: "agent_auth_required" | "agent_config_invalid" | "agent_start_failed";
   message: string;
   at: string;
 }
 
+/** Failures that need an operator; waiting for restarts is pointless. */
+export function isPermanentAgentFailure(f: { code?: string } | null | undefined): boolean {
+  return f?.code === "agent_auth_required" || f?.code === "agent_config_invalid";
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
+
 /** Classify an agent that exited before completing `initialize`. */
-export function classifyAgentFailure(stderr: string, exit: { code: number | null; signal: string | null }): AgentFailure {
-  const lines = stderr.trim().split("\n").filter(Boolean);
+export function classifyAgentFailure(stderr: string, exit: { code: number | null; signal: string | null }, agent: "kiro" | "opencode" | "acp" = "kiro"): AgentFailure {
+  const clean = stderr.replace(ANSI, "");
+  const lines = clean.trim().split("\n").map((l) => l.trim()).filter(Boolean);
   const last = lines.slice(-3).join(" ").slice(0, 500);
   const at = new Date().toISOString();
-  if (/not logged in|kiro-cli login|log ?in required|authentication required|unauthori[sz]ed|invalid (api )?key|expired (token|credentials)/i.test(stderr)) {
+  // OpenCode validates its configuration (OPENCODE_CONFIG_CONTENT / opencode.json) on start.
+  const configLine = lines.findIndex((l) => /configuration is invalid|config file at .* is not valid json|ConfigInvalidError|ConfigJsonError/i.test(l));
+  if (configLine >= 0) {
+    const detail = lines.slice(configLine, configLine + 4).join(" ").slice(0, 500);
+    return { code: "agent_config_invalid", message: `The agent rejected its configuration: ${detail}. Fix the bot's agent settings (OpenCode config) and restart the computer.`, at };
+  }
+  if (/not logged in|kiro-cli login|log ?in required|authentication required|unauthori[sz]ed|invalid (api )?key|expired (token|credentials)/i.test(clean)) {
     return {
       code: "agent_auth_required",
-      message: `Kiro is not signed in on this computer (${last || "authentication required"}). Provide a Kiro API key (KIRO_API_KEY, Pro/Pro+/Pro Max/Power plans) or use the client auth method.`,
+      message:
+        agent === "opencode"
+          ? `OpenCode could not authenticate with its model provider (${last || "authentication required"}). Put the provider's API key in the computer's agent secret.`
+          : `Kiro is not signed in on this computer (${last || "authentication required"}). Provide a Kiro API key (KIRO_API_KEY, Pro/Pro+/Pro Max/Power plans) or use the client auth method.`,
       at,
     };
   }

@@ -1,7 +1,7 @@
 import { OrreryError, sleep, type AgentEvent, type ContentPart } from "@orrery/core";
 import type { AgentAdapter, NormalizedPermission, PermissionDecision, SessionInput, SessionSetup } from "./adapters/types.js";
 import { AcpClient } from "./client.js";
-import { GATEWAY_ERRORS, GATEWAY_METHODS, readOrreryMeta, type AttachResult } from "./gateway-protocol.js";
+import { GATEWAY_ERRORS, GATEWAY_METHODS, isPermanentAgentFailure, readOrreryMeta, type AttachResult } from "./gateway-protocol.js";
 import { JsonRpcError, JsonRpcPeer, type MessageTransport, type PeerLogger } from "./jsonrpc.js";
 import { usageFromWire } from "./normalize.js";
 import type { CreateElicitationRequest, CreateElicitationResponse, PromptResponse } from "./protocol.js";
@@ -59,6 +59,8 @@ export interface TurnProgress {
 }
 
 export interface TurnController {
+  /** Whether the live session accepts guidance mid-turn. */
+  canSteer(): boolean;
   steer(parts: ContentPart[]): Promise<boolean>;
   compact(): Promise<boolean>;
 }
@@ -168,9 +170,10 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
     const init = await c.initialize(deps.adapter.initializeRequest(base)).catch(async (err: unknown) => {
       if (err instanceof JsonRpcError && err.code === GATEWAY_ERRORS.agentUnavailable) {
         // The agent can't start on that computer (e.g. Kiro not signed in): say so plainly.
-        const auth = (err.data as { reason?: string } | undefined)?.reason === "agent_auth_required";
-        if (auth) await cb.onEvent({ type: "auth.required", kind: "agent_login", message: err.message });
-        throw new OrreryError("provider_unavailable", err.message, { retryable: !auth, cause: err, details: { reason: (err.data as { reason?: string } | undefined)?.reason } });
+        const reason = (err.data as { reason?: string } | undefined)?.reason;
+        if (reason === "agent_auth_required") await cb.onEvent({ type: "auth.required", kind: "agent_login", message: err.message });
+        else if (reason === "agent_config_invalid") await cb.onEvent({ type: "notice", severity: "error", title: "The agent rejected its configuration", message: err.message });
+        throw new OrreryError("provider_unavailable", err.message, { retryable: !isPermanentAgentFailure({ code: reason }), cause: err, details: { reason } });
       }
       throw err;
     });
@@ -187,6 +190,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
   try {
     client = await connect();
     cb.onReady?.({
+      canSteer: () => Boolean(client && state.sessionId && deps.adapter.supports("steer")),
       steer: async (parts) => (client && state.sessionId ? deps.adapter.steer(client, state.sessionId, parts) : false),
       compact: async () => (client && state.sessionId ? deps.adapter.compact(client, state.sessionId) : false),
     });

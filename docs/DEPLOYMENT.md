@@ -9,8 +9,8 @@ One Dockerfile (`deploy/docker/Dockerfile`) builds every image. CI publishes mul
 | `api` | REST/SSE API, the platform MCP server, and the migration CLI (`node dist/migrate.js`) |
 | `worker` | Temporal workers, with the prebuilt workflow bundle |
 | `web` | The console on unprivileged nginx. Runtime config comes from env (`ORRERY_API_URL`, `ORRERY_OIDC_*`, `ORRERY_LANGFUSE_URL`). Optionally it proxies the API through `API_UPSTREAM`. |
-| `computer` | A bot computer: `kiro-cli`, the ACP gateway, and git, ripgrep, jq, python3 and make. Set `KIRO_CLI_URL` at build time to pin a CLI build. |
-| `computer-mock` | `computer` with the mock Kiro CLI, for trials and CI without a Kiro account |
+| `computer` | A bot computer: `kiro-cli`, `opencode`, the ACP gateway, and git, ripgrep, jq, python3 and make. Set `KIRO_CLI_URL` at build time to pin a CLI build, and `OPENCODE_VERSION` to change OpenCode (default 1.19.5). `AGENT_KIND` picks the agent. |
+| `computer-mock` | `computer-base` with the mock Kiro CLI, for trials and CI without a Kiro account. It also has a fake OpenAI-compatible model server (`/opt/orrery/mock/fake-models.js`). |
 
 ```sh
 docker build -f deploy/docker/Dockerfile --target api -t orrery/api .
@@ -66,15 +66,21 @@ To try it on a local cluster with the bundled Postgres, use `-f deploy/helm/orre
 - A migration hook Job for upgrades. Fresh installs migrate on start, using an advisory lock.
 
 **Computers namespace** (the restricted Pod Security Standard is enforced here)
-- The gateway token Secret.
-- An optional Kiro API key Secret.
-- A Role and RoleBinding that let the workers manage pods, services, PVCs and ConfigMaps.
+- An optional Kiro API key Secret, and an optional agent environment Secret with model credentials for OpenCode bots (`computers.agentEnv`).
+- A Role and RoleBinding that let the workers manage pods, services, PVCs, ConfigMaps and Secrets.
 - NetworkPolicies:
   - Only workers can reach the gateways.
   - Computers can reach DNS and the API's MCP endpoint.
   - Per-bot egress depends on the network mode, and with Cilium can be an FQDN allowlist.
+  - `computers.networkPolicy.extraEgress` adds rules for every computer, such as an in-cluster model server.
 
-**Bot computers** are not part of the chart. Workers create them on demand (server-side apply) and stop them when idle. Each one is a Pod, a Service on port 7777, a steering ConfigMap and a PVC for the home directory. The pod rolls when its spec hash changes.
+**Bot computers** are not part of the chart. Workers create them on demand (server-side apply) and stop them when idle. Each one is:
+- a Pod and a Service on port 7777;
+- a steering ConfigMap;
+- a PVC for the home directory;
+- a Secret holding **the computer's own gateway key**.
+
+The key is derived from the platform's gateway secret, which never enters the computers namespace, so an agent that reads its environment can only reach its own gateway. The pod rolls when its spec hash changes.
 
 ### Kiro credentials
 
@@ -85,6 +91,10 @@ kubectl -n orrery-computers create secret generic orrery-kiro --from-literal=api
 ```
 
 V3 bots can instead use `authMethod: client`. Orrery then answers `_kiro/auth/getAccessToken` from the gateway (`KIRO_ACCESS_TOKEN_FILE`).
+
+### OpenCode credentials
+
+OpenCode bots that use the platform's OpenAI-compatible providers need no extra credentials beyond the provider's `apiKeyEnv` variable in the agent environment secret. Bots on other OpenCode providers read their keys from the same secret (`ANTHROPIC_API_KEY`, …). See [OPENCODE.md](OPENCODE.md).
 
 ### Scaling notes
 
@@ -106,7 +116,8 @@ Environment variables are validated at startup (`packages/core/src/config.ts`). 
 | `MCP_TOKEN_SECRET`, `GATEWAY_TOKEN_SECRET`, `ENCRYPTION_KEY` | HMAC secrets for bot-scoped MCP and gateway tokens, and the AES-256-GCM key (32 bytes, base64) for stored secrets |
 | `LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_UI_URL`, `OTEL_EXPORTER_OTLP_ENDPOINT` | Tracing |
 | `PROVIDERS_FILE` / `PROVIDERS_JSON`, `EMBED_PROVIDER_ID`, `FAST_PROVIDER_ID`, `CLEF_PROVIDER_ID` | Model providers (see below) |
-| `COMPUTER_PROVIDER` (`kubernetes`, `local` or `static`), `COMPUTER_NAMESPACE`, `COMPUTER_IMAGE`, `COMPUTER_RUNTIME_CLASS`, `COMPUTER_STORAGE_CLASS`, `COMPUTER_KIRO_SECRET`, `COMPUTER_CILIUM`, `COMPUTER_STATIC_URL` | Bot computers |
+| `COMPUTER_PROVIDER` (`kubernetes`, `local` or `static`), `COMPUTER_NAMESPACE`, `COMPUTER_IMAGE`, `COMPUTER_RUNTIME_CLASS`, `COMPUTER_STORAGE_CLASS`, `COMPUTER_KIRO_SECRET`, `COMPUTER_AGENT_SECRET`, `COMPUTER_CILIUM`, `COMPUTER_STATIC_URL` | Bot computers |
+| `KIRO_CLI_PATH`, `OPENCODE_PATH` | Agent binaries for the `local` computer provider |
 | `WORKER_QUEUES`, `ACP_ACTIVITY_CONCURRENCY`, `AGENT_ACTIVITY_CONCURRENCY`, `MEMORY_ACTIVITY_CONCURRENCY` | Worker roles and concurrency |
 | `DEV_AUTH_TOKEN` | Development only. Refused when `NODE_ENV=production`. |
 

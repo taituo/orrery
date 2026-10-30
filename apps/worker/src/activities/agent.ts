@@ -16,7 +16,7 @@ import {
   type ToolKind,
   type ToolRequestFacts,
 } from "@orrery/core";
-import { approvals, bots, computers, delegations, events, messages, routines, runs, threads, usage } from "@orrery/db";
+import { approvals, bots, computers, delegations, events, messages, outbox, routines, runs, steering, threads, usage, withTx } from "@orrery/db";
 import { MemoryService } from "@orrery/memory";
 import { KnowledgeService } from "@orrery/rag";
 import { assessToolRisk, decideRoute, toOpenAIContent, type ChatMessage } from "@orrery/providers";
@@ -127,8 +127,8 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
           threadId: input.threadId,
           triggerMessageId: first.messageId,
           provider: binding.kind,
-          model: binding.kind === "openai" ? binding.model : binding.kind === "kiro-acp" ? (binding.modelId ?? null) : null,
-          engine: binding.kind === "kiro-acp" ? binding.engine : null,
+          model: binding.kind === "openai" ? binding.model : (binding.modelId ?? null),
+          engine: binding.kind === "kiro-acp" ? binding.engine : binding.kind === "opencode-acp" ? "opencode" : null,
           workflowId: `turn:${input.runId}`,
           traceId,
         });
@@ -435,6 +435,13 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
           model: input.outcome.model,
         });
         await approvals.cancelForRun(db, p.runId);
+        // Guidance nothing consumed (the turn ended or failed first, or ran on a loop that takes
+        // none) becomes the next turn instead of being dropped.
+        const current = await threads.getById(db, p.threadId);
+        if (current) {
+          const requeued = await withTx(db, (tx) => steering.requeue(tx, { id: p.runId, teamId: p.teamId, botId: p.botId, threadId: p.threadId, channel: current.channel }));
+          for (const m of requeued) await deliverInbound(deps, m).then(() => outbox.done(db, m.messageId)).catch(() => undefined);
+        }
         await usage.record(db, { runId: p.runId, teamId: p.teamId, botId: p.botId, provider: p.binding.kind, model: input.outcome.model, usage: usageSnap });
         await threads.touch(db, p.threadId);
         if (input.outcome.sessionId) await threads.setAcpSession(db, p.threadId, input.outcome.sessionId, input.outcome.agentEpoch ?? null);

@@ -3,13 +3,17 @@
 //   API → Temporal (bot + turn workflows) → worker → ACP gateway → Kiro (or the mock) → back,
 // including a tool-permission round trip decided through the approvals API.
 //
-//   node scripts/e2e.mjs --api http://localhost:8090 --token dev-token [--mock] [--timeout 180]
+//   node scripts/e2e.mjs --api http://localhost:8090 --token dev-token [--mock | --agent opencode] [--timeout 180]
 //     [--crash-cmd "docker compose kill -s SIGKILL worker" --restart-cmd "docker compose up -d worker"]
 //
 // --mock expects the wire-faithful mock Kiro CLI (ORRERY_COMPUTER_TARGET=computer-mock);
 // without it the prompt is phrased for a real kiro-cli.
-// --crash-cmd/--restart-cmd (mock only) add a durability phase: the worker is killed mid-turn,
-// restarted, and the turn must finish with every piece of output exactly once and no re-prompt.
+// --agent opencode drives a real OpenCode (AGENT_KIND=opencode) whose model is the fake
+// OpenAI-compatible server (--model, default fake/fake-small): "run: <cmd>" makes it call bash.
+// --crash-cmd/--restart-cmd (mock or opencode) add a durability phase: the worker is killed
+// mid-turn and restarted; the turn must finish with its output exactly once and no re-prompt
+// (with OpenCode the worker dies while the turn waits for an approval, which is then given to
+// the restarted worker's attempt).
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, a, i, all) => {
@@ -20,6 +24,9 @@ const args = Object.fromEntries(
 const API = (args.api ?? process.env.ORRERY_API ?? "http://localhost:8090").replace(/\/+$/, "");
 const TOKEN = args.token ?? process.env.ORRERY_DEV_TOKEN ?? "dev-token";
 const MOCK = args.mock === "true";
+const OPENCODE = args.agent === "opencode";
+// Agents whose tool calls are scripted (mock Kiro, OpenCode on the fake model) must ask.
+const SCRIPTED = MOCK || OPENCODE;
 const TIMEOUT = Number(args.timeout ?? 180) * 1000;
 const MARKER = `orrery-e2e-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -61,7 +68,7 @@ try {
     name: "E2E check",
     description: "end-to-end check",
     instructions: "You are a test bot. Follow instructions exactly and keep answers short.",
-    primary: { kind: "kiro-acp", engine: process.env.E2E_ENGINE ?? "v3" },
+    primary: OPENCODE ? { kind: "opencode-acp", modelId: args.model ?? "fake/fake-small", permissions: "orrery" } : { kind: "kiro-acp", engine: process.env.E2E_ENGINE ?? "v3" },
     policy: {
       defaultEffect: "ask",
       rules: [{ id: "ask-shell", effect: "ask", capability: "shell", resource: "**" }],
@@ -74,7 +81,7 @@ try {
   log("bot", bot.id);
   const { thread } = await call("POST", `/v1/bots/${bot.id}/threads`, { title: "e2e" });
 
-  const prompt = MOCK ? `hello e2e\nrun: echo ${MARKER}` : `Run the shell command \`echo ${MARKER}\` and reply with exactly its output.`;
+  const prompt = MOCK ? `hello e2e\nrun: echo ${MARKER}` : OPENCODE ? `run: echo ${MARKER}` : `Run the shell command \`echo ${MARKER}\` and reply with exactly its output.`;
   const sent = await call("POST", `/v1/threads/${thread.id}/messages`, { text: prompt });
   log("message", sent.messageId, "delivery:", sent.delivery);
 
@@ -91,8 +98,8 @@ try {
     if (!allow) throw new Error(`agent offered no allow option: ${JSON.stringify(approval.options)}`);
     log("approval", approval.id, "→", allow.name, `(${approval.title})`);
     await call("POST", `/v1/approvals/${approval.id}/decide`, { optionId: allow.optionId, note: "e2e" });
-  } else if (MOCK) {
-    throw new Error("the mock agent finished without asking for permission");
+  } else if (SCRIPTED) {
+    throw new Error("the agent finished without asking for permission");
   } else {
     log("agent ran the command without asking for permission");
   }
@@ -113,12 +120,12 @@ try {
 
   const { events } = await call("GET", `/v1/runs/${run.id}/events`);
   const types = new Set(events.map((e) => e.event.type));
-  for (const t of ["turn.started", "tool.call", "turn.completed", ...(MOCK ? ["approval.requested", "approval.resolved"] : [])]) if (!types.has(t)) throw new Error(`missing ${t} event`);
+  for (const t of ["turn.started", "tool.call", "turn.completed", ...(SCRIPTED ? ["approval.requested", "approval.resolved"] : [])]) if (!types.has(t)) throw new Error(`missing ${t} event`);
   log(`events ok (${events.length}): ${[...types].join(", ")}`);
 
   // Second turn on the same thread: the agent session is resumed, not recreated.
   const firstSession = events.find((e) => e.event.type === "turn.started")?.event.sessionId;
-  await call("POST", `/v1/threads/${thread.id}/messages`, { text: MOCK ? "second turn" : "Reply with the word: second" });
+  await call("POST", `/v1/threads/${thread.id}/messages`, { text: SCRIPTED ? "second turn" : "Reply with the word: second" });
   const run2 = await until("second turn to finish", async () => {
     const { runs } = await call("GET", `/v1/threads/${thread.id}/runs`);
     const r = runs.find((x) => x.id !== run.id);
@@ -148,6 +155,34 @@ try {
     const runsOnThread = (await call("GET", `/v1/threads/${t3.id}/runs`)).runs.length;
     if (count("durable start") !== 1 || count(`durable done ${MARKER}`) !== 1 || runsOnThread !== 1) throw new Error(`durability: start×${count("durable start")} done×${count(`durable done ${MARKER}`)} runs=${runsOnThread}`);
     log("durability ok: worker crashed mid-turn, turn resumed without re-prompting, output exactly once");
+  }
+
+  if (OPENCODE && args["crash-cmd"]) {
+    // The worker dies while the turn waits for a person; the held permission request is
+    // re-delivered to the restarted worker, which continues with the same approval.
+    const { thread: t3 } = await call("POST", `/v1/bots/${bot.id}/threads`, { title: "durability" });
+    await call("POST", `/v1/threads/${t3.id}/messages`, { text: `run: echo durable-${MARKER}` });
+    const asked = await until("durability approval", async () => (await call("GET", `/v1/approvals?botId=${bot.id}`)).approvals.find((a) => a.threadId === t3.id), 500);
+    await sh(args["crash-cmd"]);
+    await sleep(1000);
+    await sh(args["restart-cmd"]);
+    await sleep(5000); // let the retried activity re-attach and pick up the held request
+    const pending = (await call("GET", `/v1/approvals?botId=${bot.id}`)).approvals.filter((a) => a.threadId === t3.id);
+    if (pending.length !== 1 || pending[0].id !== asked.id) throw new Error(`durability: expected the original approval only, got ${JSON.stringify(pending.map((a) => a.id))}`);
+    const allow = asked.options.find((o) => o.kind === "allow_once");
+    await call("POST", `/v1/approvals/${asked.id}/decide`, { optionId: allow.optionId, note: "e2e after worker restart" });
+    const done = await until("durability turn to finish after the crash", async () => {
+      const r = (await call("GET", `/v1/threads/${t3.id}/runs`)).runs[0];
+      return r && !["queued", "running", "waiting_approval"].includes(r.status) ? r : undefined;
+    }, 2000);
+    if (done.status !== "completed") throw new Error(`durability run ended ${done.status}: ${JSON.stringify(done.error)}`);
+    const text = (await call("GET", `/v1/threads/${t3.id}/messages`)).messages.filter((m) => m.role === "assistant").map((m) => m.parts.map((p) => p.text ?? "").join("")).join("");
+    const runsOnThread = (await call("GET", `/v1/threads/${t3.id}/runs`)).runs.length;
+    const evs = (await call("GET", `/v1/runs/${done.id}/events`)).events.map((e) => e.event);
+    const ran = evs.filter((e) => e.type === "tool.call").length;
+    const count = text.split(`durable-${MARKER}`).length - 1;
+    if (count !== 1 || runsOnThread !== 1 || ran !== 1) throw new Error(`durability: output×${count} runs=${runsOnThread} tool calls=${ran}`);
+    log("durability ok: worker crashed while waiting for approval; the restarted worker continued the same approval and turn");
   }
 
   await call("DELETE", `/v1/bots/${bot.id}`);

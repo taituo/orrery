@@ -114,7 +114,9 @@ Turns are child workflows (`turn:<runId>`) with `ParentClosePolicy.ABANDON`, so 
 
 ## Kiro over ACP
 
-Adapters translate everything into one normalized event vocabulary (`packages/core/src/events.ts`). The UI, persistence, Langfuse tracing and memory extraction only ever see that vocabulary. Anything unknown is preserved as `extension` or `unknown_update`. See [KIRO.md](KIRO.md) for the V3/v2 compatibility matrix.
+Adapters translate everything into one normalized event vocabulary (`packages/core/src/events.ts`). The UI, persistence, Langfuse tracing and memory extraction only ever see that vocabulary. Anything unknown is preserved as `extension` or `unknown_update`. See [KIRO.md](KIRO.md) for the V3/v2 compatibility matrix and [OPENCODE.md](OPENCODE.md) for OpenCode.
+
+Guidance sent while a turn runs is injected when the agent supports steering (Kiro). Otherwise it becomes the next turn: OpenCode, Orrery's own tool loop, or a turn that ends first. The steering entry points at its message, and the message is re-queued atomically through the delivery outbox.
 
 ## Memory
 

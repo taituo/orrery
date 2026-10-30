@@ -323,15 +323,57 @@ export const events = {
   },
 };
 
+export interface SteeringEntry {
+  id: number;
+  parts: ContentPart[];
+  createdBy: string;
+  messageId: string | null;
+}
+
+const steeringFromRow = (x: Record<string, unknown>): SteeringEntry => ({ id: Number(x.id), parts: x.parts as ContentPart[], createdBy: x.created_by as string, messageId: (x.message_id as string | null) ?? null });
+
 export const steering = {
-  async add(db: Queryable, runId: string, parts: ContentPart[], by: string): Promise<number> {
-    const r = await db.query<{ id: string }>("INSERT INTO steering (run_id, parts, created_by) VALUES ($1, $2, $3) RETURNING id", [runId, JSON.stringify(parts), by]);
+  async add(db: Queryable, runId: string, parts: ContentPart[], by: string, messageId: string | null = null): Promise<number> {
+    const r = await db.query<{ id: string }>("INSERT INTO steering (run_id, parts, created_by, message_id) VALUES ($1, $2, $3, $4) RETURNING id", [runId, JSON.stringify(parts), by, messageId]);
     await db.query("SELECT pg_notify('orrery_steering', $1)", [runId]);
     return Number(r.rows[0]!.id);
   },
-  async takePending(db: Queryable, runId: string): Promise<Array<{ id: number; parts: ContentPart[] }>> {
-    const r = await db.query("UPDATE steering SET consumed = true WHERE run_id = $1 AND NOT consumed RETURNING id, parts", [runId]);
-    return r.rows.map((x) => ({ id: Number(x.id), parts: x.parts as ContentPart[] }));
+  /** Claim the run's pending guidance (at most once). */
+  async takePending(db: Queryable, runId: string): Promise<SteeringEntry[]> {
+    const r = await db.query("UPDATE steering SET consumed = true WHERE run_id = $1 AND NOT consumed RETURNING id, parts, created_by, message_id", [runId]);
+    return r.rows.map(steeringFromRow).sort((a, b) => a.id - b.id);
+  },
+  /**
+   * Turn guidance the agent could not take mid-turn into ordinary inbound messages for the next
+   * turn: the carrying message is detached from the run and an outbox entry is written, in the
+   * caller's transaction. With `ids`, re-queues those (already claimed) entries; otherwise claims
+   * and re-queues everything pending. Idempotent per entry.
+   */
+  async requeue(tx: Queryable, run: { id: string; teamId: string; botId: string; threadId: string; channel: Channel }, ids?: number[]): Promise<InboundMessage[]> {
+    const r = ids
+      ? await tx.query("UPDATE steering SET consumed = true WHERE run_id = $1 AND id = ANY($2::bigint[]) RETURNING id, parts, created_by, message_id", [run.id, ids])
+      : await tx.query("UPDATE steering SET consumed = true WHERE run_id = $1 AND NOT consumed RETURNING id, parts, created_by, message_id", [run.id]);
+    const out: InboundMessage[] = [];
+    for (const e of r.rows.map(steeringFromRow).sort((a, b) => a.id - b.id)) {
+      let msg: { id: string; author: InboundMessage["author"]; createdAt: string } | null = null;
+      if (e.messageId) {
+        const u = await tx.query(
+          `UPDATE messages SET run_id = NULL, meta = (COALESCE(meta, '{}'::jsonb) - 'steered') || '{"requeued": true}'::jsonb WHERE id = $1 RETURNING id, author, created_at`,
+          [e.messageId],
+        );
+        const row = u.rows[0];
+        if (row) msg = { id: row.id as string, author: row.author as InboundMessage["author"], createdAt: isoReq(row.created_at as Date) };
+      }
+      if (!msg) {
+        const m = await messages.insert(tx, { teamId: run.teamId, threadId: run.threadId, role: "user", author: { type: "user", id: e.createdBy }, parts: e.parts, meta: { requeued: true } });
+        await tx.query("UPDATE steering SET message_id = $2 WHERE id = $1", [e.id, m.id]);
+        msg = { id: m.id, author: m.author as InboundMessage["author"], createdAt: m.createdAt };
+      }
+      const inbound: InboundMessage = { messageId: msg.id, threadId: run.threadId, botId: run.botId, teamId: run.teamId, channel: run.channel, author: msg.author, parts: e.parts, replyTo: null, receivedAt: msg.createdAt };
+      await outbox.add(tx, inbound);
+      out.push(inbound);
+    }
+    return out;
   },
 };
 
@@ -381,6 +423,11 @@ export const approvals = {
   },
   async get(db: Queryable, teamId: string, id: string): Promise<Approval | null> {
     const r = await db.query("SELECT * FROM approvals WHERE id = $1 AND team_id = $2", [id, teamId]);
+    return r.rows[0] ? approvalFromRow(r.rows[0]) : null;
+  },
+  /** Latest approval asked for a tool call of a run (a retried turn continues with it). */
+  async findForToolCall(db: Queryable, runId: string, toolCallId: string): Promise<Approval | null> {
+    const r = await db.query("SELECT * FROM approvals WHERE run_id = $1 AND tool_call_id = $2 ORDER BY created_at DESC LIMIT 1", [runId, toolCallId]);
     return r.rows[0] ? approvalFromRow(r.rows[0]) : null;
   },
   async listPending(db: Queryable, teamId: string, botId?: string): Promise<Approval[]> {

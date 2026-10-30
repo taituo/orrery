@@ -55,7 +55,7 @@ export function normalizeOptions(raw: unknown): PermissionOption[] {
 /** Best-effort concrete resource for policy matching, from agent-supplied input only. */
 export function resourceFromRawInput(raw: unknown, fallback: string): string {
   if (isRecord(raw)) {
-    for (const key of ["command", "cmd", "path", "file_path", "filePath", "url", "uri", "pattern", "query"]) {
+    for (const key of ["command", "cmd", "path", "file_path", "filePath", "filepath", "url", "uri", "pattern", "query"]) {
       const v = raw[key];
       if (typeof v === "string" && v) return v;
       if (Array.isArray(v) && v.every((x) => typeof x === "string")) return v.join(" ");

@@ -58,7 +58,7 @@ const providers = new ProviderRegistry(loadProviders(env, (s) => YAML.parse(s)),
 const memory = new MemoryService(db, providers, dims);
 const knowledge = new KnowledgeService(db, providers, dims);
 const temporal = await connectClient(env, { workflow: [new OpenTelemetryWorkflowClientInterceptor()] });
-const computerProvider = createComputerProvider(db, env, log);
+const computerProvider = createComputerProvider(db, env, log, providers.configs);
 const mcp = new McpHub(log, (teamId, value) => secrets.resolve(db, teamId, value, env.ENCRYPTION_KEY));
 
 const deps: WorkerDeps = { env, log, db, listener, providers, memory, knowledge, computers: computerProvider, mcp, temporal, telemetry, queues };

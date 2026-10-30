@@ -7,7 +7,7 @@
  *     packages/testkit/src/gateway-smoke.ts ws://host:7777/acp cmp_bot_ada [v3|v2] [prompt]
  */
 import { foldTranscript, signToken, type AgentEvent } from "@orrery/core";
-import { GATEWAY_TOKEN_AUDIENCE, KiroV2Adapter, KiroV3Adapter, connectWebSocket, runAcpTurn } from "@orrery/acp";
+import { GATEWAY_TOKEN_AUDIENCE, gatewayKeyFor, KiroV2Adapter, KiroV3Adapter, connectWebSocket, runAcpTurn } from "@orrery/acp";
 
 const [url, computerId, engine = "v3", prompt = "Say hello.\nrun: echo hi"] = process.argv.slice(2);
 const secret = process.env.GATEWAY_TOKEN_SECRET;
@@ -15,7 +15,7 @@ if (!url || !computerId || !secret) {
   console.error("usage: GATEWAY_TOKEN_SECRET=… gateway-smoke.ts <ws-url> <computer-id> [v3|v2] [prompt]");
   process.exit(2);
 }
-const token = signToken({ sub: computerId, aud: GATEWAY_TOKEN_AUDIENCE, exp: Math.floor(Date.now() / 1000) + 600 }, secret);
+const token = signToken({ sub: computerId, aud: GATEWAY_TOKEN_AUDIENCE, exp: Math.floor(Date.now() / 1000) + 600 }, gatewayKeyFor(secret, computerId));
 const events: AgentEvent[] = [];
 const started = Date.now();
 const res = await runAcpTurn(

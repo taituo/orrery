@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { deferred, sleep, type Deferred } from "@orrery/core";
-import { classifyAgentFailure, type AgentFailure,
+import { classifyAgentFailure, isPermanentAgentFailure, type AgentFailure,
   FsService,
   GATEWAY_ERRORS,
   GATEWAY_METHODS,
@@ -62,6 +62,8 @@ export interface GatewayOptions {
   accessTokenProvider?: () => Promise<unknown>;
   /** Extra env for terminals. */
   terminalEnv?: Record<string, string>;
+  /** Which agent runs here (wording of startup failures). */
+  agentFamily?: "kiro" | "opencode" | "acp";
 }
 
 interface Upstream {
@@ -76,6 +78,8 @@ interface SessionRecord {
   owner: Upstream | null;
   seq: number;
   journal: Array<{ seq: number; method: string; params: unknown }>;
+  /** Agent epoch in which the session was created/loaded; the session is live only in that process. */
+  liveEpoch: string | null;
   setup: SessionSetupSnapshot | null;
   pendingPrompt: { requestKey: string; startedAt: string } | null;
 }
@@ -193,7 +197,7 @@ export class AcpGateway {
     if (this.agent !== proc) return;
     if (!this.init && !this.stopping) {
       // Died before `initialize` completed: remember why, and fail waiting callers fast.
-      this.lastError = classifyAgentFailure(proc.stderrTail?.() ?? "", exit);
+      this.lastError = classifyAgentFailure(proc.stderrTail?.() ?? "", exit, this.opts.agentFamily);
       this.log.error({ exit, failure: this.lastError }, "agent failed to start");
       this.failedStart.resolve();
       this.failedStart = deferred<void>();
@@ -235,7 +239,7 @@ export class AcpGateway {
   private session(sessionId: string): SessionRecord {
     let s = this.sessions.get(sessionId);
     if (!s) {
-      s = { sessionId, owner: null, seq: 0, journal: [], setup: null, pendingPrompt: null };
+      s = { sessionId, owner: null, seq: 0, journal: [], setup: null, pendingPrompt: null, liveEpoch: null };
       this.sessions.set(sessionId, s);
     }
     return s;
@@ -380,6 +384,7 @@ export class AcpGateway {
       const res = (await this.forward(METHODS.sessionNew, params)) as { sessionId: string } & SessionSetupSnapshot;
       const s = this.session(res.sessionId);
       s.owner = up;
+      s.liveEpoch = this.epoch;
       s.setup = { modes: res.modes ?? null, models: res.models ?? null, configOptions: res.configOptions ?? null };
       return res;
     });
@@ -388,7 +393,9 @@ export class AcpGateway {
       const sessionId = (params as { sessionId: string }).sessionId;
       const s = this.session(sessionId);
       s.owner = up; // replay arrives during loading: the owner must be set first
+      const epoch = this.epoch;
       const res = (await this.forward(method, params)) as SessionSetupSnapshot;
+      if (epoch === this.epoch) s.liveEpoch = epoch;
       s.setup = { modes: res?.modes ?? null, models: res?.models ?? null, configOptions: res?.configOptions ?? null };
       for (const h of this.held.values()) if (h.sessionId === sessionId) this.deliverHeld(h);
       return res;
@@ -399,6 +406,7 @@ export class AcpGateway {
       const res = (await this.forward(METHODS.sessionFork, params)) as { sessionId: string } & SessionSetupSnapshot;
       const s = this.session(res.sessionId);
       s.owner = up;
+      s.liveEpoch = this.epoch;
       s.setup = { modes: res.modes ?? null, models: res.models ?? null, configOptions: res.configOptions ?? null };
       return res;
     });
@@ -421,14 +429,14 @@ export class AcpGateway {
   private async waitReady(timeoutMs = 120_000): Promise<void> {
     if (this.isReady) return;
     const unavailable = () => new JsonRpcError(GATEWAY_ERRORS.agentUnavailable, this.lastError!.message, { reason: this.lastError!.code });
-    // Credentials don't appear by restarting: fail immediately instead of waiting out restarts.
-    if (this.lastError?.code === "agent_auth_required") throw unavailable();
+    // Credentials or a valid config don't appear by restarting: fail now instead of waiting out restarts.
+    if (isPermanentAgentFailure(this.lastError)) throw unavailable();
     const deadline = Date.now() + timeoutMs;
     while (!this.isReady) {
       const left = deadline - Date.now();
       if (left <= 0) throw this.lastError ? unavailable() : new JsonRpcError(RPC_ERRORS.internalError, "agent not ready");
       const outcome = await Promise.race([this.ready.promise.then(() => "ready" as const), this.failedStart.promise.then(() => "failed" as const), sleep(left).then(() => "timeout" as const)]);
-      if (outcome === "failed" && (this.lastError as AgentFailure | null)?.code === "agent_auth_required") throw unavailable();
+      if (outcome === "failed" && isPermanentAgentFailure(this.lastError as AgentFailure | null)) throw unavailable();
     }
   }
 
@@ -439,7 +447,9 @@ export class AcpGateway {
   }
 
   private attach(up: Upstream, p: AttachParams): AttachResult {
-    const known = this.sessions.has(p.sessionId) && this.isReady;
+    // Known = live in the current agent process. Records outlive a restart (for replay), but a
+    // restarted agent must load the session again before it can be prompted.
+    const known = this.sessions.get(p.sessionId)?.liveEpoch === this.epoch && this.isReady;
     const s = this.session(p.sessionId);
     s.owner = up;
     let replayed = 0;

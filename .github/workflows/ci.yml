@@ -37,11 +37,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - name: tests (unit, Postgres/pgvector, gateway, API, Temporal workflows)
+      - name: install OpenCode (real-binary ACP tests)
+        run: npm install -g --no-fund --no-audit opencode-ai@1.19.5 && opencode --version
+      - name: tests (unit, Postgres/pgvector, gateway, API, Temporal workflows, OpenCode over ACP)
         run: pnpm test
         env:
           TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
           TEMPORAL_TEST: "1"
+          OPENCODE_TEST: "1"
       - name: build web console and clickable prototype
         run: |
           pnpm --filter @orrery/web build
@@ -168,6 +171,49 @@ jobs:
         run: |
           docker compose ps -a > compose-ps.txt 2>&1 || true
           docker compose logs --no-color --tail 120 > compose-logs.txt 2>&1 || true
+          cat compose-ps.txt compose-logs.txt
+          for f in compose-ps.txt compose-logs.txt; do
+            msg=$(tail -c 12000 "$f" | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=$f::$msg"
+          done
+
+  e2e-opencode:
+    name: end-to-end (compose + real OpenCode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [test]
+    env:
+      ORRERY_COMPUTER_TARGET: computer
+      ORRERY_AGENT_KIND: opencode
+      COMPOSE_PROFILES: fake-models
+      # OpenCode's model: the fake OpenAI-compatible server (scripted tool calls).
+      OPENCODE_CONFIG_CONTENT: >-
+        {"provider":{"fake":{"npm":"@ai-sdk/openai-compatible","name":"Fake","options":{"baseURL":"http://fake-models:8000/v1","apiKey":"unused"},"models":{"fake-small":{"name":"fake-small","tool_call":true}}}},
+        "model":"fake/fake-small","permission":{"*":"ask"},
+        "agent":{"build":{"permission":{"*":"ask"}},"plan":{"permission":{"*":"ask"}},"general":{"permission":{"*":"ask"}},"explore":{"permission":{"*":"ask"}}},
+        "autoupdate":false,"share":"disabled"}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: start the stack with OpenCode
+        run: |
+          set -o pipefail
+          docker compose up -d --build --wait --wait-timeout 420 2>&1 | tee compose-up.txt || {
+            msg=$(tail -c 8000 compose-up.txt | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+            echo "::error title=compose up::$msg"; exit 1; }
+      - name: end-to-end turn, approval, session reuse, worker crash while waiting for approval
+        run: >
+          node scripts/e2e.mjs --api http://localhost:8090 --token dev-token --agent opencode --timeout 300
+          --crash-cmd "docker compose kill -s SIGKILL worker"
+          --restart-cmd "docker compose up -d worker"
+      - name: logs
+        if: failure()
+        run: |
+          docker compose ps -a > compose-ps.txt 2>&1 || true
+          docker compose logs --no-color --tail 150 > compose-logs.txt 2>&1 || true
           cat compose-ps.txt compose-logs.txt
           for f in compose-ps.txt compose-logs.txt; do
             msg=$(tail -c 12000 "$f" | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')

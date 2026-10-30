@@ -50,13 +50,14 @@ export interface FakeServers {
   close(): Promise<void>;
 }
 
-export async function startFakeModelServer(opts: { dims?: number } = {}): Promise<FakeServers> {
+export async function startFakeModelServer(opts: { dims?: number; port?: number; host?: string } = {}): Promise<FakeServers> {
   const dims = opts.dims ?? 64;
   const requests: FakeServers["requests"] = [];
   const server = createServer(async (req, res) => {
     try {
       const body = req.method === "POST" ? await readJson(req) : {};
       const url = new URL(req.url ?? "/", "http://x");
+      if (url.pathname === "/_requests") return send(res, 200, { requests }); // test introspection
       requests.push({ path: url.pathname, body });
       switch (url.pathname) {
         case "/v1/models":
@@ -90,10 +91,11 @@ export async function startFakeModelServer(opts: { dims?: number } = {}): Promis
       send(res, 500, { error: { message: err instanceof Error ? err.message : String(err) } });
     }
   });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const host = opts.host ?? "127.0.0.1";
+  await new Promise<void>((r) => server.listen(opts.port ?? 0, host, r));
   const addr = server.address() as { port: number };
   return {
-    url: `http://127.0.0.1:${addr.port}`,
+    url: `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${addr.port}`,
     server,
     requests,
     close: () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); }),
@@ -121,8 +123,18 @@ function chat(body: Record<string, unknown>, res: ServerResponse): void {
   } else {
     const toolMatch = userText.match(/use tool (\w+)/i);
     const tool = toolMatch ? tools.find((t) => t.function.name === toolMatch[1]) : undefined;
+    // Coding agents (OpenCode etc.): "run: <command>" → their shell tool, "write: <path>" → write tool.
+    const run = userText.match(/run: ([^\n]+)/i);
+    const write = userText.match(/write: (\S+)/i);
+    const read = userText.match(/read: (\S+)/i);
+    const readTool = tools.find((t) => t.function.name === "read");
+    const bash = tools.find((t) => t.function.name === "bash");
+    const writeTool = tools.find((t) => t.function.name === "write");
     if (tool) toolCalls = [{ id: `call_${Date.now()}`, type: "function", function: { name: tool.function.name, arguments: JSON.stringify({ query: userText }) } }];
-    else content = `Fake answer to: ${userText}`;
+    else if (run && bash) toolCalls = [{ id: `call_${Date.now()}`, type: "function", function: { name: "bash", arguments: JSON.stringify({ command: run[1]!.trim(), description: "Run the requested command" }) } }];
+    else if (read && readTool) toolCalls = [{ id: `call_${Date.now()}`, type: "function", function: { name: "read", arguments: JSON.stringify({ filePath: read[1]! }) } }];
+    else if (write && writeTool) toolCalls = [{ id: `call_${Date.now()}`, type: "function", function: { name: "write", arguments: JSON.stringify({ filePath: write[1]!, content: "written by the fake model\n" }) } }];
+    else content = `Fake answer to: ${userText.split("\n").filter(Boolean).at(-1) ?? userText}`;
   }
 
   const usage = { prompt_tokens: 42, completion_tokens: 12, total_tokens: 54 };

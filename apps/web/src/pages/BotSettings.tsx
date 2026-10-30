@@ -5,7 +5,7 @@ import { ErrorBox, Seg } from "../components/ui";
 import { useApi, useCan, useLoad } from "../lib/hooks";
 
 type Form = Omit<Bot, "id" | "teamId" | "createdAt" | "updatedAt">;
-type PrimaryKind = "kiro-v3" | "kiro-v2" | "kiro-auto" | "acp" | "openai";
+type PrimaryKind = "kiro-v3" | "kiro-v2" | "kiro-auto" | "opencode" | "acp" | "openai";
 
 const blank = (): Form => ({
   name: "",
@@ -46,20 +46,25 @@ export function BotSettingsPage() {
     return { providers: providers.providers, kbs, bots, secrets };
   }, []);
   const [f, setF] = useState<Form>(blank);
+  const [configText, setConfigText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<Error | null>(null);
   useEffect(() => {
     if (existing.data?.bot) {
       const { id: _i, teamId: _t, createdAt: _c, updatedAt: _u, ...rest } = existing.data.bot;
       setF(rest);
+      setConfigText(null);
     }
   }, [existing.data]);
 
   const chatProviders = (refs.data?.providers ?? []).filter((p) => p.kind === "openai" && (p.roles.includes("chat") || p.roles.includes("fast")));
   const modelsOf = (id: string) => ((refs.data?.providers.find((p) => p.id === id)?.models.chat as string[] | undefined) ?? []);
-  const pk: PrimaryKind = f.primary.kind === "kiro-acp" ? (`kiro-${f.primary.engine}` as PrimaryKind) : f.primary.kind;
+  // OpenCode sees Orrery's chat providers as `orrery-<id>/<model>`.
+  const openCodeModels = chatProviders.flatMap((p) => ((p.models.chat as string[] | undefined) ?? []).map((m) => `orrery-${p.id}/${m}`));
+  const pk: PrimaryKind = f.primary.kind === "kiro-acp" ? (`kiro-${f.primary.engine}` as PrimaryKind) : f.primary.kind === "opencode-acp" ? "opencode" : f.primary.kind;
   const setPrimaryKind = (k: PrimaryKind) => {
     if (k.startsWith("kiro-")) setF({ ...f, primary: { kind: "kiro-acp", engine: k.slice(5) as "v3" | "v2" | "auto", authMethod: "cli", ...(f.primary.kind === "kiro-acp" ? { modeId: f.primary.modeId, modelId: f.primary.modelId, effort: f.primary.effort } : {}) } as Form["primary"] });
+    else if (k === "opencode") setF({ ...f, primary: { kind: "opencode-acp", permissions: "orrery", ...(openCodeModels[0] ? { modelId: openCodeModels[0] } : {}) } });
     else if (k === "openai") setF({ ...f, primary: { kind: "openai", providerId: chatProviders[0]?.id ?? "", model: modelsOf(chatProviders[0]?.id ?? "")[0] ?? "", maxSteps: 12 } });
     else setF({ ...f, primary: { kind: "acp", command: "", args: [] } });
   };
@@ -69,7 +74,20 @@ export function BotSettingsPage() {
     setSaving(true);
     setErr(null);
     try {
-      const body = f as unknown as BotCreate;
+      let form = f;
+      if (f.primary.kind === "opencode-acp" && configText !== null) {
+        let config: Record<string, unknown> | undefined;
+        try {
+          const parsed: unknown = configText.trim() ? JSON.parse(configText) : undefined;
+          if (parsed !== undefined && (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))) throw new Error("must be a JSON object");
+          config = parsed as Record<string, unknown> | undefined;
+        } catch (e) {
+          throw new Error(`OpenCode config: ${(e as Error).message}`);
+        }
+        const { config: _old, ...rest } = f.primary;
+        form = { ...f, primary: { ...rest, ...(config ? { config } : {}) } };
+      }
+      const body = form as unknown as BotCreate;
       const bot = isNew ? await api.createBot(body) : await api.updateBot(botId!, body);
       toast(isNew ? `${bot.name} is ready.` : "Settings saved.");
       nav(`/bots/${bot.id}`);
@@ -130,17 +148,18 @@ export function BotSettingsPage() {
             <label className="field">
               <span>Standing instructions</span>
               <textarea className="textarea" rows={6} value={f.instructions} onChange={(e) => set("instructions", e.target.value)} placeholder="How it should work, what to avoid, how to report." />
-              <small>Sent as the system prompt (OpenAI-compatible) or as Kiro steering on the bot computer.</small>
+              <small>Sent as the system prompt (OpenAI-compatible) or as the agent's standing instructions on the bot computer (Kiro steering, OpenCode instructions).</small>
             </label>
           </Section>
 
-          <Section title="Inference" help="Kiro over the Agent Client Protocol does the real work; an OpenAI-compatible model can answer quick questions.">
+          <Section title="Inference" help="An agent over the Agent Client Protocol (Kiro, OpenCode or another) does the real work; an OpenAI-compatible model can answer quick questions.">
             <label className="field">
               <span>Engine</span>
               <select className="select" value={pk} onChange={(e) => setPrimaryKind(e.target.value as PrimaryKind)}>
                 <option value="kiro-v3">Kiro CLI V3 (ACP, recommended)</option>
                 <option value="kiro-v2">Kiro CLI v2 (ACP, legacy)</option>
                 <option value="kiro-auto">Kiro CLI, detect version</option>
+                <option value="opencode">OpenCode (ACP)</option>
                 <option value="acp">Another ACP agent</option>
                 <option value="openai">OpenAI-compatible model only</option>
               </select>
@@ -180,6 +199,54 @@ export function BotSettingsPage() {
                     </select>
                   </label>
                 )}
+              </>
+            )}
+            {f.primary.kind === "opencode-acp" && (
+              <>
+                <div className="three">
+                  <label className="field">
+                    <span>Agent</span>
+                    <input className="input" list="opencode-agents" value={f.primary.modeId ?? ""} onChange={(e) => set("primary", { ...f.primary, modeId: e.target.value || undefined } as Form["primary"])} placeholder="build" />
+                    <datalist id="opencode-agents">
+                      <option value="build" />
+                      <option value="plan" />
+                    </datalist>
+                  </label>
+                  <label className="field">
+                    <span>Model</span>
+                    <input className="input mono" list="opencode-models" value={f.primary.modelId ?? ""} onChange={(e) => set("primary", { ...f.primary, modelId: e.target.value || undefined } as Form["primary"])} placeholder="provider/model" />
+                  </label>
+                  <label className="field">
+                    <span>Small model</span>
+                    <input className="input mono" list="opencode-models" value={f.primary.smallModelId ?? ""} onChange={(e) => set("primary", { ...f.primary, smallModelId: e.target.value || undefined } as Form["primary"])} placeholder="for titles and summaries" />
+                  </label>
+                  <datalist id="opencode-models">
+                    {openCodeModels.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </div>
+                <p className="xs faint" style={{ margin: 0 }}>
+                  <code>orrery-&lt;provider&gt;/&lt;model&gt;</code> uses one of this platform's OpenAI-compatible providers; any other <code>provider/model</code> OpenCode knows (for example <code>anthropic/…</code>) uses credentials from the computer's agent secret.
+                </p>
+                <label className="field">
+                  <span>Tool permissions</span>
+                  <select className="select" value={f.primary.permissions} onChange={(e) => set("primary", { ...f.primary, permissions: e.target.value as "orrery" | "agent" } as Form["primary"])}>
+                    <option value="orrery">Orrery decides every tool call (policy below, recommended)</option>
+                    <option value="agent">OpenCode's own permission rules</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Advanced OpenCode config (JSON, optional)</span>
+                  <textarea
+                    className="textarea mono"
+                    rows={4}
+                    value={configText ?? (f.primary.config ? JSON.stringify(f.primary.config, null, 2) : "")}
+                    onChange={(e) => setConfigText(e.target.value)}
+                    placeholder={'{ "agent": { "review": { "description": "Reviews diffs", "prompt": "…" } } }'}
+                  />
+                  <small>Merged into the generated <code>opencode.json</code>. With Orrery permissions, permission rules in it are replaced by Orrery's.</small>
+                </label>
               </>
             )}
             {f.primary.kind === "acp" && (
@@ -357,7 +424,7 @@ export function BotSettingsPage() {
                   <label className="field">
                     <span>Allowed hosts</span>
                     <textarea className="textarea mono" rows={3} value={f.computer.network.allow.join("\n")} onChange={(e) => set("computer", { ...f.computer, network: { ...f.computer.network, allow: e.target.value.split(/\s+/).filter(Boolean) } })} placeholder={"github.com\n*.githubusercontent.com"} />
-                    <small>One per line. Kiro's own endpoints and the Orrery platform are always reachable.</small>
+                    <small>One per line. Kiro's own endpoints and the Orrery platform are always reachable; OpenCode bots need their model provider's API host here.</small>
                   </label>
                 )}
                 <label className="check">

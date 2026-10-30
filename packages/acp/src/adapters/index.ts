@@ -4,12 +4,14 @@ import { getPath } from "../protocol.js";
 import { StandardAcpAdapter } from "./base.js";
 import { KiroV2Adapter } from "./kiro-v2.js";
 import { KiroV3Adapter } from "./kiro-v3.js";
+import { OpenCodeAdapter } from "./opencode.js";
 import type { AgentAdapter } from "./types.js";
 
 export * from "./types.js";
 export { StandardAcpAdapter, normalizeOptions, resourceFromRawInput, flattenValues } from "./base.js";
 export { KiroV3Adapter, parseMcpSnapshot, pickAnnotations } from "./kiro-v3.js";
 export { KiroV2Adapter } from "./kiro-v2.js";
+export { OPENCODE_TOOL_AGENTS, OpenCodeAdapter, openCodeConfig, openCodeEnvironment, type OpenCodeConfigInput } from "./opencode.js";
 
 export interface AdapterFactoryOptions {
   kiroAccessToken?: () => Promise<unknown>;
@@ -18,6 +20,7 @@ export interface AdapterFactoryOptions {
 /** Adapter for a binding. `auto` picks V3 or v2 from the live initialize result. */
 export function createAdapter(binding: ProviderBinding, opts: AdapterFactoryOptions = {}): AgentAdapter {
   if (binding.kind === "acp") return new StandardAcpAdapter();
+  if (binding.kind === "opencode-acp") return new OpenCodeAdapter();
   if (binding.kind !== "kiro-acp") throw new Error(`no ACP adapter for provider kind ${binding.kind}`);
   if (binding.engine === "v2") return new KiroV2Adapter();
   if (binding.engine === "auto") return autoKiroAdapter(opts);

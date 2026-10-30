@@ -224,10 +224,22 @@ computers:
     # Secret in the computers namespace with key api-key (Kiro API key for headless auth).
     existingSecret: ""
     apiKey: ""
+  # Credentials for agents that call model providers themselves (OpenCode bots). Every key of
+  # this Secret becomes an environment variable in bot computers: ANTHROPIC_API_KEY,
+  # OPENAI_API_KEY, … and the apiKeyEnv variables of Orrery providers exposed to OpenCode.
+  agentEnv:
+    # Secret in the computers namespace; leave empty to have the chart create one from `values`.
+    existingSecret: ""
+    values: {}
   networkPolicy:
     enabled: true
     # Egress for "restricted" bots when Cilium is off: HTTPS to public addresses only.
     blockPrivateRanges: true
+    # Extra egress rules for every bot computer, e.g. an in-cluster model server that OpenCode
+    # bots reach through Orrery's OpenAI-compatible providers:
+    #   - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: models } } }]
+    #     ports: [{ port: 8000, protocol: TCP }]
+    extraEgress: []
   resourceQuota:
     enabled: false
     hard:

@@ -2,7 +2,7 @@
 
 Durable, self-hosted AI teammates: always-on agents (in the spirit of Grok Bots) that each have their own computer, memory, tools and approval policy, and that keep working across restarts.
 
-- **Inference:** Kiro over the Agent Client Protocol, with Kiro CLI V3 (`kiro-cli acp --agent-engine=v3`) as the primary engine and CLI v2 still supported. Any other ACP agent works too. OpenAI-compatible endpoints handle quick replies, memory extraction, embeddings and reranking. Cloudflare Clef (the System One API) makes routing, guardrail and memory decisions.
+- **Inference:** Kiro over the Agent Client Protocol, with Kiro CLI V3 (`kiro-cli acp --agent-engine=v3`) as the primary engine and CLI v2 still supported. [OpenCode](docs/OPENCODE.md) (`opencode acp`) is supported too, and can run on the platform's own OpenAI-compatible models; any other ACP agent works as well. OpenAI-compatible endpoints handle quick replies, memory extraction, embeddings and reranking. Cloudflare Clef (the System One API) makes routing, guardrail and memory decisions.
 - **Durability:** Temporal. Each bot is an entity workflow, each turn is a child workflow, routines are Temporal Schedules, and the ACP activity heartbeats so it can resume.
 - **Bot computers:** a Kubernetes pod per bot running the Orrery ACP gateway. The gateway keeps the agent process alive across worker restarts, journals session updates and re-delivers held permission requests. A turn is never prompted twice.
 - **Memory:**
@@ -25,6 +25,7 @@ Pre-release. What is and isn't verified:
 | Area | State |
 | --- | --- |
 | ACP client, Kiro V3/v2 adapters, gateway | Tested against a wire-faithful mock built from the Kiro docs, the official ACP SDK and the official JSON schema, and the crash/resume paths are covered. The real `kiro-cli` (2.35.1) installs and launches in CI. Without credentials it stops at sign-in, which Orrery reports clearly. **A full turn against the real CLI needs a `KIRO_API_KEY`** — add it as a repository secret and the CI job `e2e-kiro` runs. See [docs/KIRO.md](docs/KIRO.md). |
+| OpenCode over ACP | The real `opencode` (1.19.5) is tested in CI through the gateway: policy-governed tools, approvals, session reuse and load after a restart, cancellation, model and agent selection. A compose end-to-end job kills the worker while a turn waits for approval; the turn then completes once. See [docs/OPENCODE.md](docs/OPENCODE.md). |
 | Providers, Clef, memory, RAG | Tested against fake OpenAI/Clef servers on real Postgres 16 + pgvector |
 | Temporal workflows | Tested on the Temporal dev server (locally and in CI) |
 | API | End-to-end tests: auth/RBAC, bots, threads, steering, approvals, memory, knowledge, routines, secrets, webhooks, SSE resume, MCP, the delivery outbox |
@@ -36,6 +37,7 @@ Pre-release. What is and isn't verified:
 Docs:
 - [Architecture](docs/ARCHITECTURE.md)
 - [Kiro over ACP compatibility](docs/KIRO.md)
+- [OpenCode over ACP](docs/OPENCODE.md)
 - [Deployment and configuration](docs/DEPLOYMENT.md)
 
 ## Layout
@@ -43,7 +45,7 @@ Docs:
 ```
 packages/
   core           domain model, events, policy engine, config, ids, tokens
-  acp            JSON-RPC peer, ACP client, Kiro V3 / v2 / generic adapters, turn runner
+  acp            JSON-RPC peer, ACP client, Kiro V3 / v2 / OpenCode / generic adapters, turn runner
   acp-gateway    per-computer ACP gateway (WebSocket, journal, held requests, restarts)
   providers      OpenAI-compatible client, Clef System One client, router, registry
   memory         core + long-term memory, recall, write gate, consolidation
