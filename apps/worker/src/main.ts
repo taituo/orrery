@@ -3,7 +3,7 @@ import { Runtime, Worker } from "@temporalio/worker";
 import { OpenTelemetryActivityInboundInterceptor, OpenTelemetryWorkflowClientInterceptor } from "@temporalio/interceptors-opentelemetry";
 import type { ActivityInterceptorsFactory } from "@temporalio/worker";
 import YAML from "yaml";
-import { loadEnv, loadProviders, taskQueues } from "@orrery/core";
+import { loadEnv, loadProviders, taskQueues, untilReady } from "@orrery/core";
 import { PgListener, createPool, migrate, secrets, vectorDims } from "@orrery/db";
 import { MemoryService } from "@orrery/memory";
 import { KnowledgeService } from "@orrery/rag";
@@ -49,6 +49,7 @@ const telemetry = initTelemetry({
 });
 
 const db = createPool({ connectionString: env.DATABASE_URL, max: env.DATABASE_POOL_MAX, ssl: env.DATABASE_SSL, applicationName: "orrery-worker" });
+await untilReady("the database", () => db.query("SELECT 1"), { log: (m) => log.info(m) });
 if (process.env.MIGRATE_ON_START === "true") await migrate(db, { log: (m) => log.info(m) });
 const dims = await vectorDims(db);
 const listener = new PgListener(env.DATABASE_URL, (err) => log.warn({ err: String(err) }, "listener error"));
@@ -57,13 +58,13 @@ await listener.start();
 const providers = new ProviderRegistry(loadProviders(env, (s) => YAML.parse(s)), { embed: env.EMBED_PROVIDER_ID, fast: env.FAST_PROVIDER_ID, clef: env.CLEF_PROVIDER_ID });
 const memory = new MemoryService(db, providers, dims);
 const knowledge = new KnowledgeService(db, providers, dims);
-const temporal = await connectClient(env, { workflow: [new OpenTelemetryWorkflowClientInterceptor()] });
+const temporal = await untilReady("Temporal", () => connectClient(env, { workflow: [new OpenTelemetryWorkflowClientInterceptor()] }), { log: (m) => log.info(m) });
 const computerProvider = createComputerProvider(db, env, log, providers.configs);
 const mcp = new McpHub(log, (teamId, value) => secrets.resolve(db, teamId, value, env.ENCRYPTION_KEY));
 
 const deps: WorkerDeps = { env, log, db, listener, providers, memory, knowledge, computers: computerProvider, mcp, temporal, telemetry, queues };
 
-const connection = await connectNative(env);
+const connection = await untilReady("Temporal", () => connectNative(env), { log: (m) => log.info(m) });
 // Propagate trace context from workflow → activity so provider/DB spans join the turn's trace.
 const activityInterceptors: ActivityInterceptorsFactory[] = [(ctx) => ({ inbound: new OpenTelemetryActivityInboundInterceptor(ctx) })];
 const workers: Worker[] = [];

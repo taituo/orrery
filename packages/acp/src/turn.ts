@@ -34,6 +34,20 @@ export interface TurnRunnerDeps {
   maxReconnects?: number;
   /** After session/cancel, how long to wait for the prompt response before giving up. */
   cancelGraceMs?: number;
+  /**
+   * Leave the turn running on the agent and let go of it (gateway mode): the worker is shutting
+   * down. Nothing is cancelled and no permission request is answered; the run throws
+   * {@link TurnDetachedError} and the next attempt re-attaches, replays and finishes the turn.
+   */
+  detach?: AbortSignal;
+}
+
+/** The turn was handed back (worker shutdown): it is still running on the agent. */
+export class TurnDetachedError extends Error {
+  constructor() {
+    super("worker shutting down; the turn continues on another worker");
+    this.name = "TurnDetachedError";
+  }
 }
 
 export interface TurnInput {
@@ -97,6 +111,21 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
   };
   const pendingPermissions = new Set<AbortController>();
   let client: AcpClient | null = null;
+  // Detaching closes the connection first, so a permission waiter that is released afterwards
+  // has no way to answer the agent: the held request stays with the gateway for the next worker.
+  let detached = false;
+  const onDetach = () => {
+    detached = true;
+    client?.close("worker shutting down");
+    for (const ac of pendingPermissions) ac.abort(new TurnDetachedError());
+  };
+  if (deps.detach) {
+    if (!deps.viaGateway) throw new OrreryError("bad_request", "detach needs the gateway");
+    deps.detach.addEventListener("abort", onDetach, { once: true });
+  }
+  const checkDetached = () => {
+    if (detached) throw new TurnDetachedError();
+  };
 
   const progress = () => cb.onProgress?.({ sessionId: state.sessionId, lastSeq: state.lastSeq, agentEpoch: state.agentEpoch, promptSent: state.promptSent });
 
@@ -119,6 +148,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
   };
 
   const connect = async (): Promise<AcpClient> => {
+    checkDetached();
     const transport = await deps.connect();
     const peer = new JsonRpcPeer(transport, { name: "acp-client", ...(deps.logger ? { logger: deps.logger } : {}) });
     const c = new AcpClient(
@@ -216,6 +246,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
           response = await awaitPrompt(client, input.requestKey);
           await client.drainUpdates();
         } catch (err) {
+          checkDetached();
           if (err instanceof JsonRpcError && (err.code === GATEWAY_ERRORS.agentRestarted || err.code === GATEWAY_ERRORS.unknownRequestKey)) {
             await cb.onEvent({ type: "turn.interrupted", reason: err.message, resumable: err.code === GATEWAY_ERRORS.agentRestarted });
             return { sessionId: input.resume.sessionId, createdSession: false, stopReason: "interrupted", agentEpoch: state.agentEpoch, lastSeq: state.lastSeq, setup: null };
@@ -261,7 +292,11 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
       lastSeq: state.lastSeq,
       setup: state.setup,
     };
+  } catch (err) {
+    checkDetached();
+    throw err;
   } finally {
+    deps.detach?.removeEventListener("abort", onDetach);
     for (const ac of pendingPermissions) ac.abort(new Error("turn finished"));
     if (deps.viaGateway) client?.close("turn finished");
     // In direct mode the caller owns the process lifecycle (it may keep the agent warm).
@@ -376,6 +411,7 @@ export async function runAcpTurn(deps: TurnRunnerDeps, input: TurnInput, cb: Tur
           await c.drainUpdates();
           return result;
         } catch (err) {
+          checkDetached();
           if (err instanceof JsonRpcError && (err.code === GATEWAY_ERRORS.agentRestarted || err.code === GATEWAY_ERRORS.unknownRequestKey)) {
             const restarted = err.code === GATEWAY_ERRORS.agentRestarted;
             await cb.onEvent({ type: "turn.interrupted", reason: restarted ? "agent process restarted during the turn" : "turn result no longer available on the agent", resumable: restarted });

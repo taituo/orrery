@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import type { Bot } from "../api";
+import { Orb } from "./Orb";
 
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
@@ -31,12 +32,8 @@ export function Meter({ value, label }: { value: number | undefined; label?: str
 
 export type BotActivity = "working" | "waiting" | "idle" | "paused";
 
-export function Avatar({ bot, activity, size }: { bot: Pick<Bot, "name" | "avatar">; activity?: BotActivity; size?: "sm" }) {
-  return (
-    <span className={`avatar ${size ?? ""} ${activity ?? ""}`} aria-hidden>
-      {(bot.avatar || bot.name[0] || "?").slice(0, 2)}
-    </span>
-  );
+export function Avatar({ bot, activity, size }: { bot: Pick<Bot, "name" | "avatar"> & { id?: string }; activity?: BotActivity; size?: "sm" | "lg" | "xl" }) {
+  return <Orb id={bot.id ?? bot.name} name={bot.name} avatar={bot.avatar ?? null} activity={activity} {...(size ? { size } : {})} />;
 }
 
 export function StatusDot({ activity }: { activity: BotActivity }) {
@@ -152,11 +149,9 @@ export function KindIcon({ kind }: { kind: string }) {
 export function OrreryMark({ size = 22 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden>
-      <circle cx="16" cy="16" r="13" stroke="currentColor" strokeWidth="1.5" />
-      <circle cx="16" cy="16" r="7.5" stroke="currentColor" strokeWidth="1" strokeDasharray="2 2.5" />
-      <circle cx="16" cy="16" r="3" fill="currentColor" />
-      <circle cx="27.3" cy="9.5" r="2.6" fill="var(--blue)" />
-      <circle cx="10.7" cy="21.3" r="1.8" fill="currentColor" />
+      <circle cx="16" cy="16" r="12.5" stroke="currentColor" strokeWidth="1.2" opacity="0.55" />
+      <circle cx="16" cy="16" r="4.2" fill="currentColor" />
+      <circle cx="26.8" cy="10.6" r="2.6" fill="currentColor" />
     </svg>
   );
 }

@@ -4,6 +4,7 @@ import type {
   Bot,
   BotCreate,
   ContentPart,
+  Group,
   KnowledgeBase,
   KnowledgeSource,
   MemoryItem,
@@ -22,6 +23,7 @@ export type {
   Bot,
   BotCreate,
   ContentPart,
+  Group,
   KnowledgeBase,
   KnowledgeSource,
   MemoryItem,
@@ -40,6 +42,28 @@ export interface Principal {
   role: "owner" | "admin" | "member" | "viewer";
   name: string | null;
   email: string | null;
+  via?: "oidc" | "admin-token" | "api-token" | "dev";
+}
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  role: Principal["role"];
+  userName: string | null;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface SetupStatus {
+  auth: { oidc: boolean; adminToken: boolean; via: string | null };
+  computers: string;
+  agentEnv: string[];
+  providers: { chat: string[]; decisions: string | null };
+  engines: { kiro: string; opencode: string };
+  bots: number;
 }
 
 export interface BotState {
@@ -119,6 +143,8 @@ export interface SendResult {
   threadId: string;
   mode: "queue" | "steer";
   runId?: string;
+  /** Group conversations: the bots the message went to. */
+  targets?: string[];
 }
 
 /** Everything the console needs. Implemented over HTTP and by the in-browser mock. */
@@ -183,6 +209,19 @@ export interface OrreryApi {
   putSecret(name: string, value: string): Promise<void>;
   deleteSecret(name: string): Promise<void>;
   webhookToken(botId: string): Promise<{ token: string; url: string }>;
+
+  listGroups(): Promise<Group[]>;
+  createGroup(g: { name: string; topic?: string; botIds: string[] }): Promise<Group>;
+  updateGroup(id: string, patch: { name?: string; topic?: string; botIds?: string[] }): Promise<Group>;
+  archiveGroup(id: string): Promise<void>;
+
+  setup(): Promise<SetupStatus>;
+  listAgentEnv(): Promise<Array<{ name: string; updatedAt: string }>>;
+  setAgentEnv(name: string, value: string): Promise<void>;
+  deleteAgentEnv(name: string): Promise<void>;
+  listTokens(): Promise<ApiToken[]>;
+  createToken(t: { name: string; role?: Principal["role"]; forUser?: { name: string }; expiresInDays?: number }): Promise<{ token: string; apiToken: ApiToken }>;
+  revokeToken(id: string): Promise<void>;
 }
 
 export class ApiError extends Error {

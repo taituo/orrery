@@ -277,11 +277,11 @@ jobs:
           H=(-H "authorization: Bearer $TOKEN" -H "content-type: application/json" -H "accept: application/json, text/event-stream")
           curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' | grep -q '"orrery"'
           curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -q '"ask_bot"'
-      - name: end to end on Kubernetes (mock Kiro computers; approval, session reuse, ACP worker killed mid-turn, group hand-off)
+      - name: end to end on Kubernetes (mock Kiro computers; approval, session reuse, ACP worker rolled mid-turn, group hand-off)
         run: >
           node scripts/e2e.mjs --api http://localhost:8080 --token "$TOKEN" --mock --timeout 600
           --computer-image ghcr.io/taituo/orrery-computer-mock:ci
-          --crash-cmd "kubectl -n $NS delete pod -l app.kubernetes.io/component=worker-acp --wait=false --grace-period=0 --force"
+          --crash-cmd "kubectl -n $NS rollout restart deploy/orrery-worker-acp"
           --restart-cmd "kubectl -n $NS rollout status deploy/orrery-worker-acp --timeout=300s"
       - name: end to end on Kubernetes (real OpenCode on a platform provider; worker killed while waiting for approval)
         run: >
@@ -306,17 +306,27 @@ jobs:
       - name: diagnostics
         if: failure()
         run: |
-          {
-            kubectl get pods -A -o wide
-            kubectl -n $NS get events --sort-by=.lastTimestamp | tail -40
-            kubectl -n orrery-computers get all,secrets,cm -o wide
-            kubectl -n orrery-computers get events --sort-by=.lastTimestamp | tail -40
-            for d in api worker-agent worker-acp worker-memory web temporal postgresql; do echo "== $d"; kubectl -n $NS logs -l app.kubernetes.io/component=$d --tail=80 --all-containers 2>&1; done
-            for p in $(kubectl -n orrery-computers get pods -o name); do echo "== $p"; kubectl -n orrery-computers describe $p | tail -30; kubectl -n orrery-computers logs $p --tail=80 2>&1; done
-          } > k8s.txt 2>&1 || true
-          cat k8s.txt
-          msg=$(tail -c 60000 k8s.txt | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
-          echo "::error title=kubernetes diagnostics::$msg"
+          mkdir -p diag
+          kubectl get pods -A -o wide > diag/pods.txt 2>&1 || true
+          { kubectl -n $NS get events --sort-by=.lastTimestamp | tail -40; kubectl -n orrery-computers get events --sort-by=.lastTimestamp | tail -40; } > diag/events.txt 2>&1 || true
+          for d in api worker-agent worker-acp worker-memory web temporal; do
+            kubectl -n $NS logs -l app.kubernetes.io/component=$d --tail=400 --all-containers --prefix > diag/$d.txt 2>&1 || true
+            kubectl -n $NS logs -l app.kubernetes.io/component=$d --tail=400 --all-containers --prefix --previous >> diag/$d.txt 2>/dev/null || true
+            grep -iE '"level":(40|50|60)|error|warn|fail' diag/$d.txt > diag/$d.problems.txt || true
+          done
+          for p in $(kubectl -n orrery-computers get pods -o name); do
+            { echo "== $p"; kubectl -n orrery-computers describe $p | tail -25; kubectl -n orrery-computers logs $p --tail=120 2>&1; } >> diag/computers.txt
+          done
+          kubectl -n orrery-computers get all,secrets,cm,networkpolicy -o wide >> diag/computers.txt 2>&1 || true
+          cat diag/*.txt
+          a=deploy/ci/annotate.sh
+          $a "api problems" diag/api.problems.txt
+          $a "worker-acp problems" diag/worker-acp.problems.txt
+          $a "worker-agent problems" diag/worker-agent.problems.txt
+          $a "worker-acp log" diag/worker-acp.txt
+          $a "computers" diag/computers.txt
+          $a "events" diag/events.txt
+          $a "pods" diag/pods.txt
 
   e2e-kiro:
     name: end-to-end with real kiro-cli (needs KIRO_API_KEY secret)

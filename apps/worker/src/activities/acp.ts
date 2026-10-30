@@ -17,6 +17,7 @@ import {
   connectWebSocket,
   createAdapter,
   runAcpTurn,
+  TurnDetachedError,
   toWireMcpServer,
   type McpServerWire,
   type NormalizedPermission,
@@ -129,6 +130,19 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
       };
       const beat = () => ctx.heartbeat(progress);
       beat();
+      // Worker shutdown (a rolling deploy, a drained node), a heartbeat timeout (Temporal already
+      // gave the turn to another attempt) or a pause is not a cancellation: let go of the turn so it
+      // keeps running on the agent, and let the next attempt pick it up. Only a real cancellation
+      // (someone pressed Stop, the run is gone) is passed to the agent.
+      const cancel = new AbortController();
+      const detach = new AbortController();
+      const onCancelled = () => {
+        const d = ctx.cancellationDetails;
+        const handOver = Boolean(d?.workerShutdown || d?.timedOut || d?.paused) || ["WORKER_SHUTDOWN", "TIMED_OUT", "PAUSED"].includes((ctx.cancellationSignal.reason as Error | undefined)?.message ?? "");
+        (handOver ? detach : cancel).abort(ctx.cancellationSignal.reason);
+      };
+      if (ctx.cancellationSignal.aborted) onCancelled();
+      else ctx.cancellationSignal.addEventListener("abort", onCancelled, { once: true });
       const beatTimer = setInterval(beat, 10_000);
       let savedSession: string | null = known;
 
@@ -239,6 +253,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
         const pre = await approvals.getById(db, approvalId);
         const race = pre && pre.status !== "pending" ? "decided" : await Promise.race([decided.then(() => "decided" as const), timeout, aborted]);
         waiters.delete(approvalId);
+        if (race === "aborted" && detach.signal.aborted) return { outcome: "cancelled" }; // never reaches the agent: the connection is closed
         if (race === "aborted") {
           await approvals.decide(db, approvalId, "cancelled", { optionId: null, optionKind: null, by: "system", at: nowIso() });
           sink.push({ type: "approval.resolved", approvalId, outcome: "cancelled", decidedBy: "system" });
@@ -273,6 +288,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
             adapter,
             viaGateway: true,
             logger: log.child({ runId: p.runId }),
+            detach: detach.signal,
           },
           {
             requestKey: p.runId,
@@ -311,7 +327,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
               return { action: "decline" };
             },
           },
-          ctx.cancellationSignal,
+          cancel.signal,
         );
         await drainSteering();
         await sink.close();
@@ -325,6 +341,14 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
           error: result.stopReason === "interrupted" ? { code: "interrupted", message: "turn interrupted" } : null,
         };
       } catch (err) {
+        if (err instanceof TurnDetachedError || detach.signal.aborted) {
+          // Still running on the agent. Record where we are and hand it over; steering stays queued.
+          beat();
+          await sink.close();
+          tracer.close("detached");
+          log.info({ runId: p.runId, lastSeq: progress.lastSeq }, "worker shutting down; turn handed over");
+          throw ApplicationFailure.create({ type: "worker_shutdown", message: "worker shutting down; the turn continues on another worker", nonRetryable: false });
+        }
         const oe = isOrreryError(err) ? err : new OrreryError("provider_unavailable", err instanceof Error ? err.message : String(err), { cause: err });
         if (oe.code !== "interrupted") sink.push({ type: "turn.failed", error: { code: oe.code, message: oe.message, retryable: oe.retryable } });
         // A retryable failure resumes this same turn, which takes the pending guidance itself.

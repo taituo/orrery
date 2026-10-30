@@ -20,6 +20,28 @@ export function backoffMs(attempt: number, baseMs = 250, maxMs = 20_000): number
   return Math.floor(Math.random() * exp);
 }
 
+/**
+ * Keep trying `fn` until it succeeds or `timeoutMs` passes. On a fresh install every pod starts
+ * at once, so the database and Temporal are often a few seconds behind: wait for them instead of
+ * crash-looping. Says once that it is waiting, then again when it got through.
+ */
+export async function untilReady<T>(what: string, fn: () => Promise<T>, opts: { log?: (msg: string) => void; timeoutMs?: number } = {}): Promise<T> {
+  const deadline = Date.now() + (opts.timeoutMs ?? 300_000);
+  let waited = false;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const v = await fn();
+      if (waited) opts.log?.(`${what} is ready`);
+      return v;
+    } catch (err) {
+      if (Date.now() > deadline) throw err;
+      if (!waited) opts.log?.(`waiting for ${what}: ${err instanceof Error ? err.message : String(err)}`);
+      waited = true;
+      await sleep(Math.min(5_000, 500 * 2 ** Math.min(attempt, 4)));
+    }
+  }
+}
+
 export function sha256(input: string | Buffer): string {
   return createHash("sha256").update(input).digest("hex");
 }

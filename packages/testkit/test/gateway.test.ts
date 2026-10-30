@@ -11,6 +11,7 @@ import {
   connectWebSocket,
   memoryTransportPair,
   runAcpTurn,
+  TurnDetachedError,
   type MessageTransport,
   type NormalizedPermission,
   type PermissionDecision,
@@ -213,6 +214,99 @@ describe("ACP gateway", () => {
     expect(h.prompts()).toBe(1);
     const text = foldTranscript([...r1.events, ...r2.events]).assistantText;
     expect(text).toBe("You said: start. Ran `make deploy`. You said: end. ");
+  });
+
+  it("worker shutdown detaches without cancelling: the agent keeps working and the next attempt finishes the turn", async () => {
+    const h = await startHarness();
+    const r1 = recorder();
+    const detach = new AbortController();
+    const permissionSeen = deferred<void>();
+    let answered = false;
+    const a = runAcpTurn(
+      { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true, detach: detach.signal },
+      { requestKey: "run_d", messageId: "m", session, prompt: [{ type: "text", text: "start\nrun: make deploy\nend" }] },
+      {
+        ...r1,
+        decidePermission: (_p, signal) => {
+          permissionSeen.resolve();
+          // A pending approval is released by the detach; whatever it returns must not reach the agent.
+          return new Promise<PermissionDecision>((resolve) => signal.addEventListener("abort", () => ((answered = true), resolve({ outcome: "cancelled" })), { once: true }));
+        },
+      },
+      new AbortController().signal,
+    );
+    await permissionSeen.promise;
+    detach.abort();
+    await expect(a).rejects.toBeInstanceOf(TurnDetachedError);
+    expect(answered).toBe(true);
+    expect(r1.events.some((e) => e.type === "turn.interrupted" || e.type === "turn.completed")).toBe(false);
+    const progress = r1.progress!;
+    expect(progress.promptSent).toBe(true);
+
+    const r2 = recorder();
+    const res = await runAcpTurn(
+      { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true },
+      {
+        requestKey: "run_d",
+        messageId: "m",
+        session,
+        prompt: [{ type: "text", text: "start\nrun: make deploy\nend" }],
+        resume: { sessionId: progress.sessionId!, afterSeq: progress.lastSeq, agentEpoch: progress.agentEpoch, promptSent: true },
+      },
+      { ...r2, decidePermission: allowOnce },
+      new AbortController().signal,
+    );
+    expect(res.stopReason).toBe("end_turn");
+    expect(h.prompts()).toBe(1);
+    expect(foldTranscript([...r1.events, ...r2.events]).assistantText).toBe("You said: start. Ran `make deploy`. You said: end. ");
+  });
+
+  it("worker shutdown while the agent is streaming: no session/cancel, output exactly once", async () => {
+    const h = await startHarness();
+    const r1 = recorder();
+    const detach = new AbortController();
+    const cancels: string[] = [];
+    const started = deferred<void>();
+    const a = runAcpTurn(
+      { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true, detach: detach.signal },
+      { requestKey: "run_s", messageId: "m", session, prompt: [{ type: "text", text: "one\nsleep: 400\ntwo" }] },
+      {
+        ...r1,
+        onEvent: (e: AgentEvent) => {
+          r1.onEvent(e);
+          if (e.type === "message.delta") started.resolve();
+        },
+        decidePermission: allowOnce,
+      },
+      new AbortController().signal,
+    );
+    await started.promise;
+    const agent = h.agents[0]!;
+    const counted = agent.peer.tap;
+    agent.peer.tap = (dir, m) => {
+      counted?.(dir, m);
+      if (dir === "in" && "method" in m && m.method === "session/cancel") cancels.push("cancel");
+    };
+    detach.abort();
+    await expect(a).rejects.toBeInstanceOf(TurnDetachedError);
+    const progress = r1.progress!;
+    const r2 = recorder();
+    const res = await runAcpTurn(
+      { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true },
+      {
+        requestKey: "run_s",
+        messageId: "m",
+        session,
+        prompt: [{ type: "text", text: "one\nsleep: 400\ntwo" }],
+        resume: { sessionId: progress.sessionId!, afterSeq: progress.lastSeq, agentEpoch: progress.agentEpoch, promptSent: true },
+      },
+      { ...r2, decidePermission: allowOnce },
+      new AbortController().signal,
+    );
+    expect(res.stopReason).toBe("end_turn");
+    expect(cancels).toEqual([]);
+    expect(h.prompts()).toBe(1);
+    expect(foldTranscript([...r1.events, ...r2.events]).assistantText).toBe("You said: one. You said: two. ");
   });
 
   it("replays output produced while the worker was dead — from a checkpoint, or by adopting the running prompt", async () => {

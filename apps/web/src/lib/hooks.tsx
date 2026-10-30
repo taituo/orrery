@@ -108,7 +108,9 @@ export function useThread(threadId: string | undefined) {
         for (const env of batch) next[env.runId] = applyEvent(next[env.runId] ?? emptyRun(env), env);
         return next;
       });
-      for (const env of batch) if (env.event.type === "turn.completed" || env.event.type === "turn.failed" || env.event.type === "turn.interrupted") terminal = true;
+      // A new turn means a new message (from this tab, the CLI, Slack or another bot): fetch it now
+      // rather than when the turn ends.
+      for (const env of batch) if (env.event.type === "turn.started" || env.event.type === "turn.completed" || env.event.type === "turn.failed" || env.event.type === "turn.interrupted") terminal = true;
       if (terminal) setTimeout(() => void loadMessages(), 150);
     };
     const unsub = api.streamThread(

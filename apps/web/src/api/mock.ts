@@ -1,4 +1,7 @@
 import type {
+  ApiToken,
+  Group,
+  SetupStatus,
   AgentEvent,
   Approval,
   AuditEntry,
@@ -20,6 +23,7 @@ import type {
   UsageRow,
   WriteOutcome,
 } from "./types";
+import { mentionedBots } from "@orrery/core/pure";
 import { ApiError } from "./types";
 
 /**
@@ -220,6 +224,12 @@ export class MockApi implements OrreryApi {
     { name: "kiro-api-key", createdAt: ago(60 * 24 * 30) },
   ];
   private auditLog: AuditEntry[] = [];
+  private groups: Group[] = [];
+  private tokens: ApiToken[] = [
+    { id: "tok_laptop", name: "Tuomas's laptop (CLI)", role: "owner", userName: "Tuomas", prefix: "orr_k2Pq9x", createdAt: ago(60 * 24 * 9), lastUsedAt: ago(35), expiresAt: null, revokedAt: null },
+    { id: "tok_claude", name: "Claude Desktop (MCP)", role: "member", userName: "Tuomas", prefix: "orr_Zx81mA", createdAt: ago(60 * 24 * 3), lastUsedAt: ago(60 * 5), expiresAt: null, revokedAt: null },
+  ];
+  private agentEnv: Array<{ name: string; updatedAt: string }> = [{ name: "KIRO_API_KEY", updatedAt: ago(60 * 24 * 12) }];
   private live = new Map<string, LiveRun>();
   private threadSubs = new Map<string, Set<(e: RunEventEnvelope) => void>>();
   private teamSubs = new Set<(n: TeamNotice) => void>();
@@ -245,6 +255,16 @@ export class MockApi implements OrreryApi {
     await this.simulate(t4, "Draft the changelog for 2.14 from the merged PRs.", "docs", { instant: true, at: 60 * 50 });
     const t5 = this.mkThread("bot_scout", "Quick question", "web", 60 * 8);
     await this.simulate(t5, "What's our rate limit policy for API tokens?", "quick", { instant: true, at: 60 * 8 });
+
+    // A group: Ada leads; she hands the changelog note to Quill.
+    const gt = this.mkThread("bot_ada", "incidents", "group", 60 * 5);
+    this.groups.push({ id: "room_incidents", teamId: TEAM, name: "incidents", topic: "Production incidents and the follow-ups", threadId: gt.id, members: [{ botId: "bot_ada", name: "Ada", lead: true, avatar: "A" }, { botId: "bot_scout", name: "Scout", lead: false, avatar: "S" }, { botId: "bot_quill", name: "Quill", lead: false, avatar: "Q" }], createdBy: ME.userId, createdAt: ago(60 * 24 * 6) });
+    const ada = this.bots.find((b) => b.id === "bot_ada")!;
+    const quill = this.bots.find((b) => b.id === "bot_quill")!;
+    const first = await this.simulate(gt, "Checkout is throwing 502s for some users after this morning's deploy to staging. Can someone take a look?", "incident", { instant: true, at: 60 * 5, autoDecide: "allow", handoff: { to: quill, task: "could you add a line about the timeout fix to the 2.14 changelog?" } });
+    const handed = this.messages.find((m) => m.runId === first.id && m.role === "assistant");
+    if (handed) await this.simulate(gt, handed.parts.map((p) => (p.type === "text" ? p.text : "")).join(""), "docs", { instant: true, at: 60 * 4, botOverride: quill.id, existingMessageId: handed.id });
+    void ada;
 
     // Live: Scout is waiting on an approval; Ada is working an incident.
     const t6 = this.mkThread("bot_scout", "Fix broken links in docs", "web", 12);
@@ -282,7 +302,7 @@ export class MockApi implements OrreryApi {
     thread: Thread,
     text: string,
     forced: Scenario | null,
-    opts: { instant?: boolean; at?: number; autoDecide?: "allow" | "deny"; author?: Message["author"]; botOverride?: string; fastForwardToApproval?: boolean; slow?: boolean; existingMessageId?: string } = {},
+    opts: { instant?: boolean; at?: number; autoDecide?: "allow" | "deny"; author?: Message["author"]; botOverride?: string; fastForwardToApproval?: boolean; slow?: boolean; existingMessageId?: string; handoff?: { to: Bot; task: string } } = {},
   ): Promise<Run> {
     const bot = this.bots.find((b) => b.id === (opts.botOverride ?? thread.botId))!;
     let clock = opts.at !== undefined ? Date.now() - opts.at * 60_000 : Date.now();
@@ -611,6 +631,11 @@ export class MockApi implements OrreryApi {
         usage.outputTokens = 420;
       }
 
+      if (opts.handoff) {
+        // Group hand-off: the reply @mentions another bot of the group, which then answers.
+        emit({ type: "message.delta", messageId: uid("amsg"), part: { type: "text", text: "\n\n" } });
+        answer = `${answer}\n\n${await say(`@${opts.handoff.to.name}, ${opts.handoff.task}`)}`;
+      }
       const u = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.inputTokens + usage.outputTokens, ...(usage.credits ? { metering: { credits: usage.credits } } : {}), ...(run.provider === "openai" ? { costUsd: +(usage.inputTokens * 0.0000002 + usage.outputTokens * 0.0000006).toFixed(4) } : {}), contextPercent: isFast ? undefined : Math.min(64, Math.round(usage.inputTokens / 2000)), turnDurationMs: instant ? 38_000 : Date.now() - Date.parse(run.startedAt) } as Run["usage"];
       // context gauge streams as `usage`; token and credit totals arrive once, with the prompt response
       if (u.contextPercent !== undefined) emit({ type: "usage", usage: { contextPercent: u.contextPercent } });
@@ -678,7 +703,7 @@ export class MockApi implements OrreryApi {
     this.audit_("bot.archive", id);
   };
 
-  listThreads = async (botId: string) => clone(this.threads.filter((t) => t.botId === botId && !t.archived).sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt)));
+  listThreads = async (botId: string) => clone(this.threads.filter((t) => t.botId === botId && !t.archived && t.channel !== "group").sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt)));
   createThread = async (botId: string, title?: string) => clone(this.mkThread(botId, title ?? "New conversation", "web", 0));
   archiveThread = async (id: string) => {
     const t = this.threads.find((x) => x.id === id);
@@ -688,6 +713,7 @@ export class MockApi implements OrreryApi {
   sendMessage: OrreryApi["sendMessage"] = async (threadId, body) => {
     const t = this.threads.find((x) => x.id === threadId);
     if (!t) throw new ApiError(404, "not_found", "thread not found");
+    if (t.channel === "group") return this.postToGroup(t, body.text);
     const bot = this.botOr404(t.botId);
     if (bot.status === "paused") throw new ApiError(409, "conflict", `${bot.name} is paused. Resume the bot to send messages.`);
     const active = [...this.live.values()].find((l) => l.run.threadId === threadId);
@@ -911,6 +937,93 @@ export class MockApi implements OrreryApi {
     this.secrets = this.secrets.filter((s) => s.name !== name);
     this.audit_("secret.delete", name);
   };
+  /* ----------------------------------------------------------------------- groups */
+
+  private postToGroup(t: Thread, text: string) {
+    const g = this.groups.find((x) => x.threadId === t.id);
+    if (!g) throw new ApiError(409, "conflict", "the group was archived");
+    const msg: Message = { id: uid("msg"), threadId: t.id, role: "user", author: { type: "user", id: ME.userId, name: ME.name ?? "You" }, parts: [{ type: "text", text }], createdAt: now() };
+    this.messages.push(msg);
+    t.lastActivityAt = msg.createdAt;
+    const mentioned = mentionedBots(text, g.members, { allowAll: true });
+    const lead = g.members.find((m) => m.lead) ?? g.members[0]!;
+    const targets = mentioned.length ? mentioned : [lead.botId];
+    for (const botId of targets) void this.groupTurn(t, g, botId, text, msg.id, mentioned.length === 0 && botId === lead.botId);
+    return { messageId: msg.id, threadId: t.id, mode: "queue" as const, targets };
+  }
+
+  /** A bot's turn in a group; the lead may hand part of the work to the member it fits best. */
+  private async groupTurn(t: Thread, g: Group, botId: string, text: string, messageId: string, mayHandOff: boolean): Promise<void> {
+    const others = g.members.filter((m) => m.botId !== botId).map((m) => this.bots.find((b) => b.id === m.botId)!).filter(Boolean);
+    const lower = text.toLowerCase();
+    const pick = mayHandOff && others.length
+      ? (/changelog|release|docs?|write/.test(lower) ? others.find((b) => b.id === "bot_quill") : undefined) ??
+        (/cost|spend|budget/.test(lower) ? others.find((b) => b.id === "bot_ledger") : undefined) ??
+        (/link|research|look up|find/.test(lower) ? others.find((b) => b.id === "bot_scout") : undefined) ??
+        others[0]
+      : undefined;
+    const task = pick?.id === "bot_quill" ? "could you note this in the 2.14 changelog?" : pick?.id === "bot_ledger" ? "can you estimate what this costs us per month?" : "can you double-check this from your side and tell me if I missed anything?";
+    const run = await this.simulate(t, text, null, { botOverride: botId, existingMessageId: messageId, ...(pick ? { handoff: { to: pick, task } } : {}) });
+    if (!pick) return;
+    const handed = this.messages.find((m) => m.runId === run.id && m.role === "assistant");
+    if (handed) await this.simulate(t, handed.parts.map((p) => (p.type === "text" ? p.text : "")).join(""), null, { botOverride: pick.id, existingMessageId: handed.id });
+  }
+
+  listGroups = async () => clone(this.groups.map((g) => ({ ...g, members: g.members.map((m) => ({ ...m, name: this.bots.find((b) => b.id === m.botId)?.name ?? m.name })) })));
+  createGroup: OrreryApi["createGroup"] = async (input) => {
+    if (!input.name.trim()) throw new ApiError(400, "bad_request", "name the group");
+    if (this.groups.some((x) => x.name.toLowerCase() === input.name.trim().toLowerCase())) throw new ApiError(409, "conflict", `a group named "${input.name}" already exists`);
+    if (!input.botIds.length || input.botIds.length > 6) throw new ApiError(400, "bad_request", "a group has 1–6 bots");
+    const t = this.mkThread(input.botIds[0]!, input.name.trim(), "group", 0);
+    const g: Group = { id: uid("room"), teamId: TEAM, name: input.name.trim(), topic: input.topic ?? "", threadId: t.id, members: input.botIds.map((id, i) => { const b = this.botOr404(id); return { botId: id, name: b.name, lead: i === 0, avatar: b.avatar ?? null }; }), createdBy: ME.userId, createdAt: now() };
+    this.groups.unshift(g);
+    this.audit_("group.create", g.id, { name: g.name });
+    return clone(g);
+  };
+  updateGroup: OrreryApi["updateGroup"] = async (id, patch) => {
+    const g = this.groups.find((x) => x.id === id);
+    if (!g) throw new ApiError(404, "not_found", "group not found");
+    if (patch.name) g.name = patch.name;
+    if (patch.topic !== undefined) g.topic = patch.topic;
+    if (patch.botIds) g.members = patch.botIds.map((bid, i) => { const b = this.botOr404(bid); return { botId: bid, name: b.name, lead: i === 0, avatar: b.avatar ?? null }; });
+    return clone(g);
+  };
+  archiveGroup = async (id: string) => {
+    const g = this.groups.find((x) => x.id === id);
+    this.groups = this.groups.filter((x) => x.id !== id);
+    const t = g && this.threads.find((x) => x.id === g.threadId);
+    if (t) t.archived = true;
+  };
+
+  /* ----------------------------------------------------------------------- setup, credentials, tokens */
+
+  setup = async (): Promise<SetupStatus> => ({
+    auth: { oidc: false, adminToken: true, via: "admin-token" },
+    computers: "kubernetes",
+    agentEnv: this.agentEnv.map((v) => v.name),
+    providers: { chat: ["local-vllm"], decisions: "clef" },
+    engines: { kiro: this.agentEnv.some((v) => v.name === "KIRO_API_KEY") ? "configured" : "needs KIRO_API_KEY (or a Kiro secret in the cluster)", opencode: "configured" },
+    bots: this.bots.filter((b) => b.status !== "archived").length,
+  });
+  listAgentEnv = async () => clone(this.agentEnv);
+  setAgentEnv = async (name: string) => {
+    if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(name)) throw new ApiError(400, "bad_request", "variable names are UPPER_SNAKE_CASE");
+    this.agentEnv = [...this.agentEnv.filter((v) => v.name !== name), { name, updatedAt: now() }].sort((a, b) => a.name.localeCompare(b.name));
+    this.audit_("agent_env.put", name);
+  };
+  deleteAgentEnv = async (name: string) => void (this.agentEnv = this.agentEnv.filter((v) => v.name !== name));
+  listTokens = async () => clone(this.tokens);
+  createToken: OrreryApi["createToken"] = async (t) => {
+    const token = `orr_${Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[b % 64]).join("").slice(0, 43)}`;
+    const apiToken: ApiToken = { id: uid("tok"), name: t.name, role: t.role ?? "member", userName: t.forUser?.name ?? ME.name, prefix: token.slice(0, 10), createdAt: now(), lastUsedAt: null, expiresAt: t.expiresInDays ? new Date(Date.now() + t.expiresInDays * 86400_000).toISOString() : null, revokedAt: null };
+    this.tokens.unshift(apiToken);
+    return { token, apiToken: clone(apiToken) };
+  };
+  revokeToken = async (id: string) => {
+    const t = this.tokens.find((x) => x.id === id);
+    if (t) t.revokedAt = now();
+  };
+
   webhookToken = async (botId: string) => ({ token: `whk_${botId}_${Math.random().toString(36).slice(2, 14)}`, url: `https://orrery.northwind.example/v1/hooks/bots/${botId}` });
 }
 

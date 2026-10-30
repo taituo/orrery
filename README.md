@@ -3,7 +3,7 @@
 Durable, self-hosted AI teammates: always-on agents (in the spirit of Grok Bots) that each have their own computer, memory, tools and approval policy, and that keep working across restarts.
 
 - **Inference:** Kiro over the Agent Client Protocol, with Kiro CLI V3 (`kiro-cli acp --agent-engine=v3`) as the primary engine and CLI v2 still supported. [OpenCode](docs/OPENCODE.md) (`opencode acp`) is supported too, and can run on the platform's own OpenAI-compatible models; any other ACP agent works as well. OpenAI-compatible endpoints handle quick replies, memory extraction, embeddings and reranking. Cloudflare Clef (the System One API) makes routing, guardrail and memory decisions.
-- **Durability:** Temporal. Each bot is an entity workflow, each turn is a child workflow, routines are Temporal Schedules, and the ACP activity heartbeats so it can resume.
+- **Durability:** Temporal. Each bot is an entity workflow, each turn is a child workflow, routines are Temporal Schedules, and the ACP activity heartbeats so it can resume. A worker that is shutting down (a rolling deploy, a drained node) hands its running turns over instead of cancelling them: the agent keeps working and the next worker finishes the turn.
 - **Bot computers:** a Kubernetes pod per bot running the Orrery ACP gateway. The gateway keeps the agent process alive across worker restarts, journals session updates and re-delivers held permission requests. A turn is never prompted twice.
 - **Memory:**
   - Core memory blocks that are always in context.
@@ -18,7 +18,7 @@ Durable, self-hosted AI teammates: always-on agents (in the spirit of Grok Bots)
   - A REST + SSE API with an OpenAPI 3.1 spec at `/openapi.json`.
   - The `orrery` CLI, for chat, approvals, groups, tokens and agent credentials.
   - `/mcp`. People's tokens get tools to ask bots and decide approvals from any MCP client; agents get memory, knowledge and delegation tools.
-  - A React console with a clickable prototype build.
+  - A web console: one conversation per bot or group, approvals inline, a floating composer with @mentions and live steering. It has three looks: Warm (a slow paper-design shader under frosted glass), Dusk, and Wireframe (plain white with black hairlines). A clickable prototype builds to a single HTML file.
 
 ## Status
 
@@ -31,10 +31,10 @@ Pre-release. What is and isn't verified:
 | Providers, Clef, memory, RAG | Tested against fake OpenAI/Clef servers on real Postgres 16 + pgvector |
 | Temporal workflows | Tested on the Temporal dev server (locally and in CI) |
 | API | End-to-end tests: auth/RBAC, bots, threads, steering, approvals, memory, knowledge, routines, secrets, webhooks, SSE resume, MCP, the delivery outbox |
-| Full stack | `scripts/e2e.mjs` run against the production bundles: API → Temporal → worker → gateway → mock Kiro, with an approval, session reuse and a worker SIGKILL mid-turn (the turn resumes, nothing is re-prompted, output appears once). CI repeats this on Docker Compose. |
-| Web console | Typechecked and built, then exercised in a browser against the in-browser mock |
+| Full stack | `scripts/e2e.mjs` run against the production bundles: API → Temporal → worker → gateway → mock Kiro, with an approval, session reuse, a worker SIGKILL mid-turn and a SIGTERM mid-turn (the turn resumes, nothing is re-prompted, output appears once), and a group hand-off. CI repeats this on Docker Compose. |
+| Web console | Typechecked and built, then exercised in a headless browser against the in-browser mock: all three themes, desktop and phone widths, group @mentions and hand-offs, approvals, settings |
 | Images | `api`, `worker`, `web`, `computer` and `computer-mock` build for amd64 and arm64 in CI and are pushed to `ghcr.io/taituo/orrery-*` from `main` |
-| Helm chart | `helm lint` and kubeconform pass in CI. A kind job also installs the chart with **default values**, with NetworkPolicies enforced by Calico. Against that install it runs the end-to-end checks, both mock Kiro and real OpenCode on an in-cluster provider: ACP workers killed mid-turn, group hand-offs, the CLI and MCP, and `helm upgrade`. |
+| Helm chart | `helm lint` and kubeconform pass in CI. A kind job also installs the chart with **default values**, with NetworkPolicies enforced by Calico. Against that install it runs the end-to-end checks, both mock Kiro and real OpenCode on an in-cluster provider: a rolling restart of the ACP workers mid-turn, a worker pod deleted while a turn waits for approval, group hand-offs, the CLI and MCP, and `helm upgrade`. |
 
 Docs:
 - [Architecture](docs/ARCHITECTURE.md)

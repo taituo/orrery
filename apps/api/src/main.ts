@@ -1,7 +1,7 @@
 import { OpenTelemetryWorkflowClientInterceptor } from "@temporalio/interceptors-opentelemetry";
 import { Client } from "@temporalio/client";
 import YAML from "yaml";
-import { loadEnv, loadProviders, taskQueues } from "@orrery/core";
+import { loadEnv, loadProviders, taskQueues, untilReady } from "@orrery/core";
 import { PgListener, createPool, migrate, vectorDims } from "@orrery/db";
 import { MemoryService } from "@orrery/memory";
 import { KnowledgeService } from "@orrery/rag";
@@ -25,6 +25,7 @@ const telemetry = initTelemetry({
 });
 
 const db = createPool({ connectionString: env.DATABASE_URL, max: env.DATABASE_POOL_MAX, ssl: env.DATABASE_SSL, applicationName: "orrery-api" });
+await untilReady("the database", () => db.query("SELECT 1"), { log: (m) => log.info(m) });
 if (process.env.MIGRATE_ON_START === "true") await migrate(db, { log: (m) => log.info(m) });
 const dims = await vectorDims(db);
 const listener = new PgListener(env.DATABASE_URL, (err) => log.warn({ err: String(err) }, "listener error"));

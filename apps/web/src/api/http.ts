@@ -157,4 +157,17 @@ export class HttpApi implements OrreryApi {
   putSecret = async (name: string, value: string) => void (await this.req("PUT", `/v1/secrets/${encodeURIComponent(name)}`, { value }));
   deleteSecret = async (name: string) => void (await this.req("DELETE", `/v1/secrets/${encodeURIComponent(name)}`));
   webhookToken: OrreryApi["webhookToken"] = (botId) => this.get(`/v1/bots/${botId}/webhook-token`);
+
+  listGroups = async () => (await this.get<{ groups: never[] }>("/v1/groups")).groups;
+  createGroup: OrreryApi["createGroup"] = async (g) => (await this.req<{ group: never }>("POST", "/v1/groups", g)).group;
+  updateGroup: OrreryApi["updateGroup"] = async (id, patch) => (await this.req<{ group: never }>("PATCH", `/v1/groups/${id}`, patch)).group;
+  archiveGroup = async (id: string) => void (await this.req("DELETE", `/v1/groups/${id}`));
+
+  setup: OrreryApi["setup"] = () => this.get("/v1/setup");
+  listAgentEnv: OrreryApi["listAgentEnv"] = async () => (await this.get<{ variables: never[] }>("/v1/agent-env")).variables;
+  setAgentEnv = async (name: string, value: string) => void (await this.req("PUT", `/v1/agent-env/${encodeURIComponent(name)}`, { value }));
+  deleteAgentEnv = async (name: string) => void (await this.req("DELETE", `/v1/agent-env/${encodeURIComponent(name)}`));
+  listTokens: OrreryApi["listTokens"] = async () => (await this.get<{ tokens: never[] }>("/v1/tokens")).tokens;
+  createToken: OrreryApi["createToken"] = (t) => this.req("POST", "/v1/tokens", t);
+  revokeToken = async (id: string) => void (await this.req("DELETE", `/v1/tokens/${id}`));
 }

@@ -32,7 +32,14 @@ const TIMEOUT = Number(args.timeout ?? 180) * 1000;
 const MARKER = `orrery-e2e-${Math.random().toString(36).slice(2, 8)}`;
 
 const started = Date.now();
-const log = (...m) => console.log(`[${((Date.now() - started) / 1000).toFixed(1)}s]`, ...m);
+const lines = [];
+const log = (...m) => {
+  const line = [`[${((Date.now() - started) / 1000).toFixed(1)}s]`, ...m].join(" ");
+  lines.push(line);
+  console.log(line);
+};
+// Threads under test, newest last: on failure their runs are summarised for the CI annotation.
+const watched = [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sh = async (cmd) => {
   const { execSync } = await import("node:child_process");
@@ -83,6 +90,7 @@ try {
   });
   log("bot", bot.id);
   const { thread } = await call("POST", `/v1/bots/${bot.id}/threads`, { title: "e2e" });
+  watched.push(thread.id);
 
   const prompt = MOCK ? `hello e2e\nrun: echo ${MARKER}` : OPENCODE ? `run: echo ${MARKER}` : `Run the shell command \`echo ${MARKER}\` and reply with exactly its output.`;
   const sent = await call("POST", `/v1/threads/${thread.id}/messages`, { text: prompt });
@@ -142,6 +150,7 @@ try {
 
   if (MOCK && args["crash-cmd"]) {
     const { thread: t3 } = await call("POST", `/v1/bots/${bot.id}/threads`, { title: "durability" });
+    watched.push(t3.id);
     await call("POST", `/v1/threads/${t3.id}/messages`, { text: `durable start\nsleep: 15000\ndurable done ${MARKER}` });
     const r3 = await until("durability turn to start", async () => (await call("GET", `/v1/threads/${t3.id}/runs`)).runs.find((r) => r.status === "running"), 300);
     await sleep(1500);
@@ -164,6 +173,7 @@ try {
     // The worker dies while the turn waits for a person; the held permission request is
     // re-delivered to the restarted worker, which continues with the same approval.
     const { thread: t3 } = await call("POST", `/v1/bots/${bot.id}/threads`, { title: "durability" });
+    watched.push(t3.id);
     await call("POST", `/v1/threads/${t3.id}/messages`, { text: `run: echo durable-${MARKER}` });
     const asked = await until("durability approval", async () => (await call("GET", `/v1/approvals?botId=${bot.id}`)).approvals.find((a) => a.threadId === t3.id), 500);
     await sh(args["crash-cmd"]);
@@ -198,6 +208,7 @@ try {
       ...(args["computer-image"] ? { computer: { image: args["computer-image"] } } : {}),
     });
     const { group } = await call("POST", "/v1/groups", { name: `e2e ${MARKER}`, botIds: [bot.id, scout.id] });
+    watched.push(group.threadId);
     const posted = await call("POST", `/v1/groups/${group.id}/messages`, { text: `handoff: ${scout.name} check-${MARKER}` });
     if (JSON.stringify(posted.targets) !== JSON.stringify([bot.id])) throw new Error(`group: expected the lead to be targeted, got ${JSON.stringify(posted.targets)}`);
     const settled = await until("group hand-off to finish", async () => {
@@ -219,5 +230,18 @@ try {
   log("PASS");
 } catch (err) {
   log("FAIL:", err instanceof Error ? err.message : err);
+  for (const id of watched.slice(-2)) {
+    try {
+      const { runs } = await call("GET", `/v1/threads/${id}/runs`);
+      for (const r of runs) log(`thread ${id} run ${r.id} bot=${r.botId} ${r.status}${r.error ? ` ${JSON.stringify(r.error).slice(0, 400)}` : ""}`);
+    } catch (e) {
+      log(`(could not read runs of ${id}: ${e.message})`);
+    }
+  }
+  if (process.env.GITHUB_ACTIONS) {
+    // Logs on GitHub are not always reachable; an annotation is. They are cut at 4 KB.
+    const body = lines.join("\n").slice(-3800).replace(/%/g, "%25").replace(/\r/g, "").replace(/\n/g, "%0A");
+    console.log(`::error title=e2e ${OPENCODE ? "opencode" : MOCK ? "mock" : "kiro"}::${body}`);
+  }
   process.exit(1);
 }

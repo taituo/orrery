@@ -4,17 +4,18 @@ import { useApi, useCan } from "../lib/hooks";
 import { duration, num, pct, relTime } from "../lib/format";
 import { credits, type ApprovalView, type RunView } from "../lib/runs";
 import { KindIcon } from "./ui";
+import { Wave } from "./Orb";
 import { Markdown } from "./Markdown";
 
-const STATUS_LABEL: Record<string, string> = { pending: "Queued", in_progress: "Running", completed: "Done", failed: "Failed" };
+const STATUS_LABEL: Record<string, string> = { pending: "queued", in_progress: "running", completed: "done", failed: "failed" };
 
 export function ToolCard({ tool, defaultOpen }: { tool: ToolCallState; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(Boolean(defaultOpen));
-  const failure = tool.status === "failed" ? (tool.failureReason === "denied" ? "Denied" : tool.failureReason === "cancelled" ? "Cancelled" : "Failed") : null;
+  const failure = tool.status === "failed" ? (tool.failureReason === "denied" ? "denied" : tool.failureReason === "cancelled" ? "cancelled" : "failed") : null;
   const textOut = (tool.content ?? []).flatMap((c) => (c.type === "content" && c.content.type === "text" ? [c.content.text] : []));
   const diffs = (tool.content ?? []).filter((c): c is Extract<NonNullable<ToolCallState["content"]>[number], { type: "diff" }> => c.type === "diff");
   const isTerminal = tool.kind === "execute";
-  const source = tool.identity?.source === "mcp" ? `MCP: ${tool.identity.server}` : tool.identity?.source === "platform" ? "Orrery" : null;
+  const source = tool.identity?.source === "mcp" ? tool.identity.server : tool.identity?.source === "platform" ? "orrery" : null;
   return (
     <div className={`tool ${tool.status}`}>
       <button className="tool-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -24,9 +25,9 @@ export function ToolCard({ tool, defaultOpen }: { tool: ToolCallState; defaultOp
         <span className="tool-title" title={tool.title}>
           {tool.title}
         </span>
-        <span className="row">
-          {source && <span className="chip">{source}</span>}
-          {failure ? <span className="chip red">{failure}</span> : <span className={`chip ${tool.status === "completed" ? "" : tool.status === "in_progress" ? "blue" : "dashed"}`}>{STATUS_LABEL[tool.status]}</span>}
+        <span className="tool-state">
+          {source && <span>{source}</span>}
+          {failure ?? (tool.status === "in_progress" ? <Wave label="running" /> : STATUS_LABEL[tool.status])}
         </span>
       </button>
       {open && (
@@ -103,7 +104,7 @@ export function ApprovalCard({ a, compact }: { a: ApprovalView; compact?: boolea
     const allowed = a.resolved.optionKind?.startsWith("allow");
     return (
       <div className="approval resolved small">
-        <span className={`chip ${allowed ? "green" : a.resolved.outcome === "selected" ? "red" : ""}`}>{a.resolved.outcome === "selected" ? (allowed ? (a.resolved.optionKind === "allow_always" ? "Always allowed" : "Allowed") : "Denied") : a.resolved.outcome === "expired" ? "Expired" : "Cancelled"}</span>{" "}
+        <span className={`chip ${allowed ? "green" : a.resolved.outcome === "selected" ? "red" : ""}`}>{a.resolved.outcome === "selected" ? (allowed ? (a.resolved.optionKind === "allow_always" ? "always allowed" : "allowed") : "denied") : a.resolved.outcome === "expired" ? "expired" : "cancelled"}</span>{" "}
         <span className="muted">
           {a.toolCall.title}
           {a.resolved.actor ? ` by ${a.resolved.actor}` : a.resolved.decidedBy !== "user" ? ` by ${a.resolved.decidedBy}` : ""}
@@ -130,7 +131,7 @@ export function ApprovalCard({ a, compact }: { a: ApprovalView; compact?: boolea
   return (
     <div className="approval" role="group" aria-label={`Approval needed: ${a.toolCall.title}`}>
       <div className="spread">
-        <strong>Approval needed</strong>
+        <span className="approval-title">Needs your approval</span>
         <span className="xs muted">expires {relTime(a.expiresAt)}</span>
       </div>
       <pre className="approval-cmd mono">{cmd}</pre>
@@ -164,7 +165,7 @@ export function ApprovalCard({ a, compact }: { a: ApprovalView; compact?: boolea
               return (
                 <button
                   key={o.optionId}
-                  className={`btn ${o.kind === "allow_once" ? "primary" : o.kind.startsWith("reject") ? "danger" : ""}`}
+                  className={`btn ${o.kind === "allow_once" ? "primary" : o.kind.startsWith("reject") ? "ghost danger" : "ghost"}`}
                   disabled={disabled}
                   title={always && !isAdmin ? "Only admins can grant standing permissions" : undefined}
                   onClick={() => void decide(o.optionId, o.kind)}
