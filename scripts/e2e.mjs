@@ -5,6 +5,7 @@
 //
 //   node scripts/e2e.mjs --api http://localhost:8090 --token dev-token [--mock | --agent opencode] [--timeout 180]
 //     [--crash-cmd "docker compose kill -s SIGKILL worker" --restart-cmd "docker compose up -d worker"]
+//     [--computer-image <image>]   (Kubernetes: bot computers from this image)
 //
 // --mock expects the wire-faithful mock Kiro CLI (ORRERY_COMPUTER_TARGET=computer-mock);
 // without it the prompt is phrased for a real kiro-cli.
@@ -69,6 +70,8 @@ try {
     description: "end-to-end check",
     instructions: "You are a test bot. Follow instructions exactly and keep answers short.",
     primary: OPENCODE ? { kind: "opencode-acp", modelId: args.model ?? "fake/fake-small", permissions: "orrery" } : { kind: "kiro-acp", engine: process.env.E2E_ENGINE ?? "v3" },
+    // Kubernetes: which computer image the bot gets (e.g. the mock Kiro image in CI).
+    ...(args["computer-image"] ? { computer: { image: args["computer-image"] } } : {}),
     policy: {
       defaultEffect: "ask",
       rules: [{ id: "ask-shell", effect: "ask", capability: "shell", resource: "**" }],
@@ -183,6 +186,33 @@ try {
     const count = text.split(`durable-${MARKER}`).length - 1;
     if (count !== 1 || runsOnThread !== 1 || ran !== 1) throw new Error(`durability: output×${count} runs=${runsOnThread} tool calls=${ran}`);
     log("durability ok: worker crashed while waiting for approval; the restarted worker continued the same approval and turn");
+  }
+
+  if (MOCK) {
+    // Group conversation: a person posts without mentions → the lead answers; its reply
+    // @mentions the second bot → hand-off → the second bot answers in the same conversation.
+    const { bot: scout } = await call("POST", "/v1/bots", {
+      name: `Scout_${MARKER.slice(-4)}`,
+      instructions: "You are a test bot.",
+      primary: { kind: "kiro-acp", engine: process.env.E2E_ENGINE ?? "v3" },
+      ...(args["computer-image"] ? { computer: { image: args["computer-image"] } } : {}),
+    });
+    const { group } = await call("POST", "/v1/groups", { name: `e2e ${MARKER}`, botIds: [bot.id, scout.id] });
+    const posted = await call("POST", `/v1/groups/${group.id}/messages`, { text: `handoff: ${scout.name} check-${MARKER}` });
+    if (JSON.stringify(posted.targets) !== JSON.stringify([bot.id])) throw new Error(`group: expected the lead to be targeted, got ${JSON.stringify(posted.targets)}`);
+    const settled = await until("group hand-off to finish", async () => {
+      const { runs } = await call("GET", `/v1/threads/${group.threadId}/runs`);
+      return runs.length >= 2 && runs.every((r) => !["queued", "running", "waiting_approval"].includes(r.status)) ? runs : undefined;
+    });
+    if (settled.some((r) => r.status !== "completed")) throw new Error(`group runs: ${settled.map((r) => r.status).join(", ")}`);
+    const byBot = new Set(settled.map((r) => r.botId));
+    if (!byBot.has(bot.id) || !byBot.has(scout.id)) throw new Error("group: both bots should have run");
+    const gm = (await call("GET", `/v1/threads/${group.threadId}/messages`)).messages.filter((m) => m.role === "assistant");
+    const fromScout = gm.find((m) => m.author.id === scout.id);
+    if (!fromScout || !fromScout.parts.map((p) => p.text ?? "").join("").includes(`check-${MARKER}`)) throw new Error("group: the second bot did not answer the hand-off");
+    log(`group ok: lead handed off to ${scout.name}; ${settled.length} turns in one conversation`);
+    await call("DELETE", `/v1/groups/${group.id}`);
+    await call("DELETE", `/v1/bots/${scout.id}`);
   }
 
   await call("DELETE", `/v1/bots/${bot.id}`);

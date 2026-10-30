@@ -95,7 +95,7 @@ export function BotWorkspace() {
 }
 
 function channelLabel(c: Thread["channel"]): string {
-  return { web: "Chat", api: "API", slack: "Slack", routine: "Routine", peer: "From a teammate", webhook: "Webhook" }[c] ?? c;
+  return { web: "Chat", api: "API", slack: "Slack", routine: "Routine", peer: "From a teammate", webhook: "Webhook", group: "Group" }[c] ?? c;
 }
 
 type Item = { kind: "msg"; at: string; m: Message } | { kind: "run"; at: string; r: RunView };

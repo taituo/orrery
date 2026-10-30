@@ -31,7 +31,8 @@ RUN pnpm --filter @orrery/api build \
  && pnpm --filter @orrery/acp-gateway build \
  && pnpm --filter @orrery/web build \
  && node scripts/bundle.mjs --standalone packages/testkit/src/mock-kiro-cli.ts /out/mock/mock-kiro-cli.js \
- && node scripts/bundle.mjs --standalone packages/testkit/src/serve-fake-models.ts /out/mock/fake-models.js
+ && node scripts/bundle.mjs --standalone packages/testkit/src/serve-fake-models.ts /out/mock/fake-models.js \
+ && node scripts/bundle-cli.mjs /out/cli/orrery.mjs
 # Production node_modules for the externals each bundle keeps (native Temporal core,
 # OpenTelemetry, pg, pino, ws, …), flattened so bundles resolve them from /app/node_modules.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
@@ -67,6 +68,8 @@ CMD ["node", "dist/main.js"]
 ############################################################ web
 FROM nginxinc/nginx-unprivileged:${NGINX_VERSION} AS web
 COPY --from=build /src/apps/web/dist /usr/share/nginx/html
+# The CLI, served by every install: curl -fsSLo orrery <url>/cli/orrery.mjs
+COPY --from=build /out/cli/orrery.mjs /usr/share/nginx/html/cli/orrery.mjs
 COPY deploy/docker/web/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY deploy/docker/web/40-orrery-config.sh /docker-entrypoint.d/40-orrery-config.sh
 ENV API_UPSTREAM="" ORRERY_API_URL="" ORRERY_OIDC_ISSUER="" ORRERY_OIDC_CLIENT_ID="" ORRERY_OIDC_SCOPE="openid profile email offline_access" ORRERY_OIDC_AUDIENCE="" ORRERY_LANGFUSE_URL=""

@@ -1,23 +1,35 @@
-Orrery {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+{{- $fullname := include "orrery.fullname" . -}}
+Orrery is installed in namespace {{ .Release.Namespace }} (images: {{ .Values.image.registry }}/orrery-*:{{ default .Chart.AppVersion .Values.image.tag }}).
 
-Console:   {{ if .Values.ingress.enabled }}{{ ternary "https" "http" .Values.ingress.tls.enabled }}://{{ .Values.ingress.host }}{{ else }}kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "orrery.fullname" . }}-web 8080{{ end }}
-API docs:  {{ .Values.config.publicBaseUrl }}/docs
-Computers: namespace {{ .Values.computers.namespace }} ({{ .Values.computers.provider }} provider)
+Open the console (API, MCP and docs are served from the same address):
+{{- if .Values.ingress.enabled }}
+  {{ include "orrery.publicBaseUrl" . }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }}-web 8080:{{ .Values.web.service.port }}
+  open http://localhost:8080
+{{- end }}
+{{- if .Values.config.adminToken.enabled }}
 
-Checklist:
-  1. Temporal namespace "{{ .Values.config.temporal.namespace }}" must exist at {{ .Values.config.temporal.address }}:
-       temporal operator namespace create --namespace {{ .Values.config.temporal.namespace }}
-{{- if and (eq .Values.computers.provider "kubernetes") (not (or .Values.computers.kiro.apiKey .Values.computers.kiro.existingSecret)) }}
-  2. Kiro has no credentials yet. Create a Kiro API key (Pro, Pro+, Pro Max or Power plan) and store it:
-       kubectl -n {{ .Values.computers.namespace }} create secret generic {{ include "orrery.fullname" . }}-kiro --from-literal=api-key=<KIRO_API_KEY>
+Sign in with the admin token:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "orrery.secretName" . }} -o jsonpath='{.data.admin-token}' | base64 -d; echo
 {{- end }}
-{{- if not .Values.config.oidc.issuer }}
-  3. No OIDC issuer is configured: only the development token (if set) can sign in.
-{{- end }}
-{{- if not .Values.config.providers }}
-  4. No OpenAI-compatible or Clef providers are configured: memory extraction, embeddings,
-     quick replies and the risk guardrail are disabled until you add config.providers.
+{{- if .Values.config.oidc.issuer }}
+Or sign in through {{ .Values.config.oidc.issuer }}.
 {{- end }}
 
-Verify a bot computer end to end:
-  kubectl -n {{ .Values.computers.namespace }} get pods -l app.kubernetes.io/name=orrery-computer
+CLI (Node.js 20+; served by the install itself) and MCP, with the same token or an API token:
+  curl -fsSLo orrery {{ include "orrery.publicBaseUrl" . }}/cli/orrery.mjs && chmod +x orrery
+  ./orrery login --url {{ include "orrery.publicBaseUrl" . }} --token <token>
+  ./orrery mcp     # MCP client config: {{ include "orrery.publicBaseUrl" . }}/mcp
+
+Give bots a model: in the console, Settings → Agent credentials, set KIRO_API_KEY (Kiro) or a key
+such as ANTHROPIC_API_KEY (OpenCode), or add OpenAI-compatible providers (config.providers).
+{{- if .Values.temporalServer.enabled }}
+
+Temporal UI: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }}-temporal 8233
+{{- end }}
+{{- if or .Values.postgresql.enabled .Values.temporalServer.enabled }}
+
+Bundled {{ if .Values.postgresql.enabled }}PostgreSQL{{ end }}{{ if and .Values.postgresql.enabled .Values.temporalServer.enabled }} and {{ end }}{{ if .Values.temporalServer.enabled }}Temporal{{ end }} run as single pods. For production use managed
+services (config.database, config.temporal) and disable the bundled ones.
+{{- end }}

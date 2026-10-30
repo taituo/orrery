@@ -13,9 +13,11 @@ Durable, self-hosted AI teammates: always-on agents (in the spirit of Grok Bots)
 - **Knowledge (RAG):** chunked, embedded sources with a prompt-injection gate, reranking and a Clef evidence filter.
 - **Governance:** tool policies (deny > ask > allow) plus a risk guardrail. Approvals show exactly the options the agent offered, including Kiro's persistent consent. You also get an audit log, encrypted secrets and OIDC with RBAC.
 - **Observability:** Langfuse. One trace per turn, with agent, tool, generation and retriever observations. User feedback is recorded as scores.
-- **API, MCP and UI:**
+- **Groups:** like a group chat with 1–6 bots and people. Mentioned bots answer (otherwise the lead answers), and bots hand work to each other by @mentioning.
+- **API, CLI, MCP and UI:**
   - A REST + SSE API with an OpenAPI 3.1 spec at `/openapi.json`.
-  - A platform MCP server at `/mcp` that gives agents memory, knowledge and delegation tools.
+  - The `orrery` CLI, for chat, approvals, groups, tokens and agent credentials.
+  - `/mcp`. People's tokens get tools to ask bots and decide approvals from any MCP client; agents get memory, knowledge and delegation tools.
   - A React console with a clickable prototype build.
 
 ## Status
@@ -32,12 +34,13 @@ Pre-release. What is and isn't verified:
 | Full stack | `scripts/e2e.mjs` run against the production bundles: API → Temporal → worker → gateway → mock Kiro, with an approval, session reuse and a worker SIGKILL mid-turn (the turn resumes, nothing is re-prompted, output appears once). CI repeats this on Docker Compose. |
 | Web console | Typechecked and built, then exercised in a browser against the in-browser mock |
 | Images | `api`, `worker`, `web`, `computer` and `computer-mock` build for amd64 and arm64 in CI and are pushed to `ghcr.io/taituo/orrery-*` from `main` |
-| Helm chart | `helm lint` and kubeconform pass in CI. Not yet installed on a live cluster. |
+| Helm chart | `helm lint` and kubeconform pass in CI. A kind job also installs the chart with **default values**, with NetworkPolicies enforced by Calico. Against that install it runs the end-to-end checks, both mock Kiro and real OpenCode on an in-cluster provider: ACP workers killed mid-turn, group hand-offs, the CLI and MCP, and `helm upgrade`. |
 
 Docs:
 - [Architecture](docs/ARCHITECTURE.md)
 - [Kiro over ACP compatibility](docs/KIRO.md)
 - [OpenCode over ACP](docs/OPENCODE.md)
+- [CLI, MCP and API](docs/CLI-AND-MCP.md)
 - [Deployment and configuration](docs/DEPLOYMENT.md)
 
 ## Layout
@@ -56,12 +59,24 @@ packages/
   observability  logging, OpenTelemetry + Langfuse, turn tracer
   testkit        mock Kiro CLI (V3/v2), fake model servers, test Postgres, gateway smoke tool
 apps/
-  api            Hono REST + SSE API, OIDC auth, platform MCP server
+  api            Hono REST + SSE API, auth (OIDC, admin and API tokens), groups, MCP for agents and people
+  cli            the `orrery` command-line client (one dependency-free file, served by the web image)
   worker         Temporal workers (agent / acp / memory queues), bot computer provider
   web            React console; `build:prototype` makes a single-file clickable prototype
 ```
 
 ## Quick start
+
+**Kubernetes** (everything bundled; no values needed):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/taituo/orrery/main/deploy/install.sh | sh
+kubectl -n orrery port-forward svc/orrery-web 8080:8080    # console, API, MCP: http://localhost:8080
+```
+
+Sign in with the admin token the installer prints. Then set a model credential in Settings → Agent credentials (`KIRO_API_KEY`, or `ANTHROPIC_API_KEY` for OpenCode) and create a bot. The CLI comes from the install itself: `curl -fsSLo orrery http://localhost:8080/cli/orrery.mjs`. See [Deployment](docs/DEPLOYMENT.md) and [CLI, MCP and API](docs/CLI-AND-MCP.md).
+
+**Docker Compose:**
 
 ```sh
 cp .env.example .env                       # add KIRO_API_KEY, or:

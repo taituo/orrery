@@ -94,6 +94,14 @@ export const EnvSchema = z.object({
   OIDC_AUDIENCE: z.string().optional(),
   OIDC_TEAM_CLAIM: z.string().default("org_id"),
   OIDC_ROLE_CLAIM: z.string().default("role"),
+  /**
+   * Bootstrap owner token (32+ characters) for installs without an identity provider: the console,
+   * CLI and MCP clients sign in with it, and it can mint API tokens. Allowed in production.
+   */
+  ADMIN_TOKEN: z.string().min(32, "ADMIN_TOKEN must be at least 32 characters").optional(),
+  /** Team the admin token (and its API tokens) belongs to. */
+  ADMIN_TEAM_ID: z.string().default("team_default"),
+  ADMIN_TEAM_NAME: z.string().default("Orrery"),
   /** Development only: `Authorization: Bearer <DEV_AUTH_TOKEN>` acts as an owner of DEV_TEAM_ID. */
   DEV_AUTH_TOKEN: z.string().optional(),
   DEV_TEAM_ID: z.string().default("team_dev"),
@@ -151,7 +159,7 @@ export function assertProductionSafe(env: Env): void {
   if (env.DEV_AUTH_TOKEN) problems.push("DEV_AUTH_TOKEN must not be set in production");
   if (env.MCP_TOKEN_SECRET.startsWith("dev-insecure")) problems.push("MCP_TOKEN_SECRET uses the development default");
   if (env.GATEWAY_TOKEN_SECRET.startsWith("dev-insecure")) problems.push("GATEWAY_TOKEN_SECRET uses the development default");
-  if (!env.OIDC_ISSUER) problems.push("OIDC_ISSUER is required in production");
+  if (!env.OIDC_ISSUER && !env.ADMIN_TOKEN) problems.push("production needs OIDC_ISSUER or an ADMIN_TOKEN");
   if (problems.length) throw new Error(`Unsafe production configuration: ${problems.join("; ")}`);
 }
 

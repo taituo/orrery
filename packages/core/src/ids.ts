@@ -46,6 +46,8 @@ export const ID_PREFIXES = {
   computer: "cmp",
   audit: "aud",
   delegation: "dlg",
+  apiToken: "tok",
+  room: "room",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

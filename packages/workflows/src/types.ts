@@ -57,6 +57,8 @@ export interface PreparedTurn {
   approvalTimeoutMinutes: number;
   replyTo: InboundMessage["replyTo"];
   authorUserId: string | null;
+  /** Group conversations: hand-offs that led here (0 = a person asked). */
+  hops?: number;
 }
 
 export interface AcpTurnInput {

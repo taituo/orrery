@@ -117,9 +117,11 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
         sink.push(e);
       };
 
+      // This bot's agent session for the conversation (each bot of a group has its own).
+      const known = (await threads.acpSessionFor(db, p.threadId, p.botId))?.sessionId ?? null;
       // Heartbeat continuously (liveness while waiting on humans) with resume details.
       let progress: AcpHeartbeat = {
-        sessionId: (previous?.sessionId ?? thread.acpSessionId) ?? null,
+        sessionId: (previous?.sessionId ?? known) ?? null,
         lastSeq: resumable ? previous!.lastSeq : -1,
         agentEpoch: resumable ? previous!.agentEpoch : null,
         promptSent: Boolean(resumable),
@@ -128,7 +130,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
       const beat = () => ctx.heartbeat(progress);
       beat();
       const beatTimer = setInterval(beat, 10_000);
-      let savedSession: string | null = thread.acpSessionId ?? null;
+      let savedSession: string | null = known;
 
       // Steering: the API writes to `steering` and NOTIFYs; we inject into the live turn. Guidance
       // the agent cannot take (no steering support, or the turn is ending) is re-queued as the
@@ -144,7 +146,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
         for (const m of inbound) {
           // Best effort now; the API's outbox relay retries if the workflow engine is unreachable.
           await deliverInbound(deps, m)
-            .then(() => outbox.done(db, m.messageId))
+            .then(() => outbox.done(db, m.messageId, m.botId))
             .catch((err: unknown) => log.warn({ runId: p.runId, messageId: m.messageId, err: String(err) }, "re-queued guidance left to the outbox relay"));
         }
       };
@@ -300,7 +302,7 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
               progress = { ...pr, computerId: input.computer.computerId };
               if (pr.sessionId && pr.sessionId !== savedSession) {
                 savedSession = pr.sessionId;
-                void threads.setAcpSession(db, p.threadId, pr.sessionId, pr.agentEpoch).catch(() => undefined);
+                void threads.setAcpSession(db, p.threadId, pr.sessionId, pr.agentEpoch, p.botId).catch(() => undefined);
               }
             },
             onElicitation: async (req) => {

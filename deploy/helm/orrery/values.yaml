@@ -1,14 +1,19 @@
-# Orrery Helm values. External dependencies (PostgreSQL 16 + pgvector, Temporal, Langfuse)
-# are referenced, not bundled: run them with their own charts or managed services.
-# For a self-contained trial cluster see values-dev.yaml.
+# Orrery Helm values.
+#
+# Out of the box (no values) the chart installs a complete, working platform: API, workers,
+# console, a bundled PostgreSQL 16 + pgvector, a bundled Temporal server, generated secrets and
+# a bootstrap admin token. Reach it with `kubectl port-forward` (see the install notes) or set
+# ingress.host. For production, point config.database / config.temporal at managed services,
+# configure OIDC, and turn the bundled ones off.
 
 nameOverride: ""
 fullnameOverride: ""
 
 image:
   registry: ghcr.io/taituo
-  # Defaults to the chart appVersion.
-  tag: ""
+  # Image tag for every Orrery image. "main" follows the main branch (published by CI); pin a
+  # release or a commit (sha-<short sha>) for production. Empty = the chart appVersion.
+  tag: main
   pullPolicy: IfNotPresent
 images:
   api: orrery-api
@@ -20,8 +25,9 @@ imagePullSecrets: []
 config:
   environment: production
   logLevel: info
-  # Public URL of the console/API (used for links, webhook URLs and CORS).
-  publicBaseUrl: https://orrery.example.com
+  # Public URL of the console/API (used for links, webhook URLs and CORS). Empty: derived from
+  # ingress.host, or http://localhost:8080 (port-forward) without an ingress.
+  publicBaseUrl: ""
   # Extra origins allowed to call the API from browsers (the public URL is always allowed).
   webOrigins: []
 
@@ -30,13 +36,16 @@ config:
     url: ""
     existingSecret: ""
     existingSecretKey: database-url
+    # TLS to PostgreSQL (ignored for the bundled database, which runs in-cluster without TLS).
     ssl: true
     poolMax: 20
     # Embedding column width; set before the first migration. Smaller embeddings are padded.
     vectorDims: 1536
 
   temporal:
-    address: temporal-frontend.temporal.svc:7233
+    # External Temporal frontend (when temporalServer.enabled is false), e.g.
+    # temporal-frontend.temporal.svc:7233 or <ns>.<account>.tmprl.cloud:7233.
+    address: ""
     namespace: orrery
     taskQueuePrefix: orrery
     # mTLS: an existing kubernetes.io/tls Secret (tls.crt / tls.key).
@@ -65,6 +74,12 @@ config:
     webClientId: ""
     webScope: openid profile email offline_access
 
+  # Bootstrap owner token: signs in to the console, CLI and MCP without an identity provider, and
+  # mints API tokens for people and scripts. Generated (48 characters) and kept across upgrades;
+  # read it with:  kubectl get secret <release>-platform -o jsonpath='{.data.admin-token}' | base64 -d
+  adminToken:
+    enabled: true
+    value: ""
   # Development only: static bearer token acting as an owner. Refused when environment=production.
   devAuthToken: ""
 
@@ -120,17 +135,17 @@ containerSecurityContext:
     drop: [ALL]
 
 api:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { cpu: 200m, memory: 384Mi }
     limits: { memory: 1Gi }
   autoscaling:
     enabled: true
-    minReplicas: 2
+    minReplicas: 1
     maxReplicas: 8
     targetCPUUtilizationPercentage: 70
   podDisruptionBudget:
-    minAvailable: 1
+    maxUnavailable: 1
   podAnnotations: {}
   nodeSelector: {}
   tolerations: []
@@ -141,7 +156,7 @@ worker:
   roles:
     agent:
       queues: agent
-      replicas: 2
+      replicas: 1
       resources:
         requests: { cpu: 250m, memory: 512Mi }
         limits: { memory: 1536Mi }
@@ -149,7 +164,7 @@ worker:
     acp:
       # Long-running ACP turns (one activity per live turn); scale on concurrent turns.
       queues: acp
-      replicas: 2
+      replicas: 1
       resources:
         requests: { cpu: 250m, memory: 512Mi }
         limits: { memory: 2Gi }
@@ -182,23 +197,28 @@ worker:
   affinity: {}
 
 web:
-  replicas: 2
+  replicas: 1
   resources:
     requests: { cpu: 20m, memory: 32Mi }
     limits: { memory: 128Mi }
   podDisruptionBudget:
-    minAvailable: 1
+    maxUnavailable: 1
+  # The console proxies /v1, /mcp and /docs to the API, so one address serves everything.
+  service:
+    type: ClusterIP
+    port: 8080
   nodeSelector: {}
   tolerations: []
   affinity: {}
 
 ingress:
-  enabled: true
+  # Off by default (works on any cluster through port-forward or web.service.type=LoadBalancer).
+  enabled: false
   className: ""
   annotations: {}
-  host: orrery.example.com
+  host: ""
   tls:
-    enabled: true
+    enabled: false
     secretName: orrery-tls
 
 migrations:
@@ -259,10 +279,23 @@ metrics:
     interval: 30s
     labels: {}
 
-# Bundled single-instance PostgreSQL with pgvector, for trials only.
+# Bundled single-instance PostgreSQL 16 + pgvector. On by default so the chart works out of the
+# box; for production use a managed or operator-run PostgreSQL (config.database) and disable it.
 postgresql:
-  enabled: false
+  enabled: true
   image: pgvector/pgvector:pg16
   storage: 10Gi
   storageClassName: ""
   password: ""
+
+# Bundled Temporal server (`temporal server start-dev`: one pod, SQLite on a persistent volume,
+# Web UI on port 8233). On by default so the chart works out of the box; for production run the
+# official Temporal chart or Temporal Cloud, set config.temporal.address and disable this.
+temporalServer:
+  enabled: true
+  image: temporalio/temporal:1.9.1
+  storage: 5Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }

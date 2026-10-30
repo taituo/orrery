@@ -14,6 +14,7 @@ import { createTestDb, hasTestDb, startFakeModelServer, type FakeServers } from 
 import { Authenticator, Delivery, EventHub, RecordingWorkflowGateway, createApp, createNodeServer } from "../src/index.js";
 
 const TOKEN = "test-dev-token-0123456789";
+const ADMIN = "admin-token-0123456789-0123456789-0123456789";
 const run = hasTestDb() ? describe : describe.skip;
 
 run("orrery api", () => {
@@ -56,6 +57,7 @@ run("orrery api", () => {
       NODE_ENV: "test",
       DATABASE_URL: tdb.url,
       DEV_AUTH_TOKEN: TOKEN,
+      ADMIN_TOKEN: ADMIN,
       ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
       MCP_TOKEN_SECRET: "test-mcp-secret-0123456789abcdef",
       PUBLIC_BASE_URL: "http://localhost:8080",
@@ -83,8 +85,9 @@ run("orrery api", () => {
     await hub.start();
     const log = createLogger("api-test", "silent");
     delivery = new Delivery(db, wf, log, { attemptTimeoutMs: 500 });
-    const { app } = createApp({ env, log, db, delivery, auth: new Authenticator(env, db), workflows: wf, memory, knowledge, providers, hub, telemetry: null });
-    server = createNodeServer(app, { env, db, memory, knowledge, workflows: wf, log });
+    const auth = new Authenticator(env, db);
+    const { app } = createApp({ env, log, db, delivery, auth, workflows: wf, memory, knowledge, providers, hub, telemetry: null });
+    server = createNodeServer(app, { env, db, memory, knowledge, workflows: wf, log, auth, delivery });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }, 60_000);
@@ -356,6 +359,99 @@ run("orrery api", () => {
 
     const denied = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
     expect(denied.status).toBe(401);
+  });
+
+  it("signs in with the admin token and API tokens; revoked tokens stop working", async () => {
+    const me = await call("GET", "/v1/me", undefined, ADMIN);
+    expect(me.json).toMatchObject({ role: "owner", via: "admin-token", teamId: "team_default" });
+    const created = await call("POST", "/v1/tokens", { name: "laptop", role: "member", forUser: { name: "Alice" } }, ADMIN);
+    expect(created.status).toBe(201);
+    const token = created.json.token as string;
+    expect(token).toMatch(/^orr_[A-Za-z0-9_-]{40,}$/);
+    const alice = await call("GET", "/v1/me", undefined, token);
+    expect(alice.json).toMatchObject({ role: "member", name: "Alice", via: "api-token", teamId: "team_default" });
+    // a member cannot mint an admin token
+    expect((await call("POST", "/v1/tokens", { name: "x", role: "admin" }, token)).status).toBe(403);
+    const list = await call("GET", "/v1/tokens", undefined, ADMIN);
+    expect(list.json.tokens[0]).toMatchObject({ name: "laptop", userName: "Alice", prefix: token.slice(0, 10) });
+    expect(JSON.stringify(list.json)).not.toContain(token);
+    expect((await call("DELETE", `/v1/tokens/${created.json.apiToken.id}`, undefined, ADMIN)).status).toBe(200);
+    expect((await call("GET", "/v1/me", undefined, token)).status).toBe(401);
+  });
+
+  it("stores agent credentials write-only and reports setup status", async () => {
+    expect((await call("PUT", "/v1/agent-env/ANTHROPIC_API_KEY", { value: "sk-ant-test" })).status).toBe(200);
+    expect((await call("PUT", "/v1/agent-env/lowercase", { value: "x" })).status).toBe(400);
+    expect((await call("PUT", "/v1/agent-env/LD_PRELOAD", { value: "/tmp/x.so" })).status).toBe(400);
+    const vars = await call("GET", "/v1/agent-env");
+    expect(vars.json.variables.map((v: any) => v.name)).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(JSON.stringify(vars.json)).not.toContain("sk-ant-test");
+    expect((await call("GET", "/v1/secrets")).json.secrets.map((x: any) => x.name)).not.toContain("agent-env.ANTHROPIC_API_KEY");
+    const setup = await call("GET", "/v1/setup");
+    expect(setup.json).toMatchObject({ computers: "local", agentEnv: ["ANTHROPIC_API_KEY"], engines: { opencode: "configured" }, auth: { adminToken: true } });
+    expect(setup.json.engines.kiro).toMatch(/needs KIRO_API_KEY/);
+  });
+
+  let groupThread: string;
+  let groupId: string;
+  let scoutId: string;
+
+  it("routes group messages to mentioned bots, or the lead", async () => {
+    scoutId = (await call("POST", "/v1/bots", { ...botBody, name: "Scout", routing: { mode: "fixed" } })).json.bot.id;
+    const quill = (await call("POST", "/v1/bots", { ...botBody, name: "Release Bot", routing: { mode: "fixed" } })).json.bot.id;
+    const g = await call("POST", "/v1/groups", { name: "incidents", topic: "On-call", botIds: [botId, scoutId, quill] });
+    expect(g.status).toBe(201);
+    groupId = g.json.group.id;
+    groupThread = g.json.group.threadId;
+    expect(g.json.group.members.map((m: any) => [m.name, m.lead])).toEqual([["Ada", true], ["Scout", false], ["Release Bot", false]]);
+    expect((await call("POST", "/v1/groups", { name: "Incidents", botIds: [botId] })).status).toBe(409);
+
+    const delivered = () => wf.calls.filter((c) => c.op === "deliver").map((c) => c.args[0] as any);
+    const before = delivered().length;
+    const r1 = await call("POST", `/v1/groups/${groupId}/messages`, { text: "payments look slow" });
+    expect(r1.json.targets).toEqual([botId]);
+    const r2 = await call("POST", `/v1/threads/${groupThread}/messages`, { text: "@scout check the dashboards, then @Release Bot hold the deploy" });
+    expect(r2.json.targets).toEqual([scoutId, quill]);
+    const r3 = await call("POST", `/v1/groups/${groupId}/messages`, { text: "@all stand down" });
+    expect(r3.json.targets).toHaveLength(3);
+    const sent = delivered().slice(before);
+    expect(sent.map((m) => m.botId)).toEqual([botId, scoutId, quill, botId, scoutId, quill]);
+    expect(sent.every((m) => m.channel === "group" && m.threadId === groupThread && m.hops === 0)).toBe(true);
+    // one stored message per post, shared by every bot it went to
+    expect(new Set(sent.slice(1, 3).map((m) => m.messageId)).size).toBe(1);
+    const msgs = await call("GET", `/v1/threads/${groupThread}/messages`);
+    expect(msgs.json.messages).toHaveLength(3);
+    // group threads are not listed among a bot's own conversations
+    expect((await call("GET", `/v1/bots/${botId}/threads`)).json.threads.map((t: any) => t.id)).not.toContain(groupThread);
+    expect((await call("GET", "/v1/groups")).json.groups.map((x: any) => x.name)).toEqual(["incidents"]);
+  });
+
+  it("gives people an MCP tool set with their own token", async () => {
+    const minted = await call("POST", "/v1/tokens", { name: "mcp" });
+    const client = new McpClient({ name: "desktop-test", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${minted.json.token}` } } }));
+    const tools = (await client.listTools()).tools.map((t) => t.name);
+    expect(tools).toEqual(expect.arrayContaining(["list_bots", "ask_bot", "wait_for_reply", "get_conversation", "list_approvals", "decide_approval", "list_groups"]));
+    expect(tools).not.toContain("memory_save"); // platform tools are for agents
+    const listed = await client.callTool({ name: "list_bots", arguments: {} });
+    expect(JSON.stringify(listed.content)).toContain("Scout");
+    const groupsListed = await client.callTool({ name: "list_groups", arguments: {} });
+    expect(JSON.stringify(groupsListed.structuredContent)).toContain("incidents");
+    // ask without waiting: the message is delivered and the call returns the conversation
+    const before = wf.calls.filter((c) => c.op === "deliver").length;
+    const asked = await client.callTool({ name: "ask_bot", arguments: { bot: "scout", message: "status?", wait_seconds: 0 } });
+    expect(asked.isError).toBeFalsy();
+    const out = asked.structuredContent as { conversation_id: string; status: string };
+    expect(out.conversation_id).toMatch(/^thr_/);
+    expect(out.status).toBe("running");
+    const d = wf.calls.filter((c) => c.op === "deliver").slice(before).map((c) => c.args[0] as any);
+    expect(d).toHaveLength(1);
+    expect(d[0]).toMatchObject({ botId: scoutId, channel: "api" });
+    const conv = await client.callTool({ name: "get_conversation", arguments: { conversation_id: out.conversation_id } });
+    expect(JSON.stringify(conv.content)).toContain("status?");
+    const bad = await client.callTool({ name: "ask_bot", arguments: { bot: "nobody", message: "hi", wait_seconds: 0 } });
+    expect(bad.isError).toBe(true);
+    await client.close();
   });
 
   it("archives threads and bots", async () => {

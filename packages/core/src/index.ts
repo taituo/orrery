@@ -6,3 +6,4 @@ export * from "./domain.js";
 export * from "./policy.js";
 export * from "./config.js";
 export * from "./util.js";
+export * from "./mentions.js";

@@ -30,14 +30,34 @@ export class Delivery {
     return { message, delivered };
   }
 
+  /**
+   * One message for several bots (a group conversation): stored once, one delivery intent per
+   * bot, all in one transaction; then delivered to each bot's workflow.
+   */
+  async submitFanout(
+    msg: Omit<Message, "id" | "createdAt"> & { teamId: string },
+    inbound: Omit<InboundMessage, "messageId" | "receivedAt" | "botId">,
+    botIds: string[],
+  ): Promise<{ message: Message; delivered: boolean }> {
+    const { message, all } = await withTx(this.db, async (tx) => {
+      const message = await messages.insert(tx, msg);
+      const all: InboundMessage[] = botIds.map((botId) => ({ ...inbound, botId, messageId: message.id, receivedAt: message.createdAt }));
+      for (const i of all) await outbox.add(tx, i);
+      await threads.touch(tx, msg.threadId);
+      return { message, all };
+    });
+    const results = await Promise.all(all.map((i) => this.attempt(i, 0)));
+    return { message, delivered: results.every(Boolean) };
+  }
+
   private async attempt(inbound: InboundMessage, attempts: number): Promise<boolean> {
     try {
       await withTimeout(this.workflows.deliver(inbound), this.opts.attemptTimeoutMs ?? 4_000);
-      await outbox.done(this.db, inbound.messageId);
+      await outbox.done(this.db, inbound.messageId, inbound.botId);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      await outbox.failed(this.db, inbound.messageId, message, attempts).catch(() => undefined);
+      await outbox.failed(this.db, inbound.messageId, inbound.botId, message, attempts).catch(() => undefined);
       this.log.warn({ messageId: inbound.messageId, attempts: attempts + 1, err: message }, "delivery deferred to outbox");
       return false;
     }

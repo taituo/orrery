@@ -44,7 +44,7 @@ const auth = new Authenticator(env, db);
 const delivery = new Delivery(db, workflows, log);
 delivery.start();
 const { app } = createApp({ env, log, db, delivery, auth, workflows, memory, knowledge, providers, hub, telemetry });
-const server = createNodeServer(app, { env, db, memory, knowledge, workflows, log });
+const server = createNodeServer(app, { env, db, memory, knowledge, workflows, log, auth, delivery });
 server.listen(env.PORT, () => log.info({ port: env.PORT }, "orrery api listening"));
 
 const shutdown = async (signal: string) => {

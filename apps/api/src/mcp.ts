@@ -9,6 +9,9 @@ import type { KnowledgeService } from "@orrery/rag";
 import { MCP_TOKEN_AUDIENCE, PLATFORM_TOOLS, type McpTokenClaims, type ToolContext } from "@orrery/tools";
 import type { Logger } from "pino";
 import type { WorkflowGateway } from "./workflow-gateway.js";
+import type { Authenticator } from "./auth.js";
+import type { Delivery } from "./delivery.js";
+import { handleUserMcp } from "./user-mcp.js";
 
 /**
  * The Orrery platform MCP server ("orrery"), exposed to agents running in bot computers.
@@ -25,12 +28,19 @@ export interface McpDeps {
   knowledge: KnowledgeService;
   workflows: WorkflowGateway;
   log: Logger;
+  /** People's tokens (API tokens, admin token, OIDC) get the user tool set (see user-mcp.ts). */
+  auth?: Authenticator;
+  delivery?: Delivery;
 }
 
 export async function handleMcp(deps: McpDeps, req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
   const auth = req.headers.authorization;
   const token = /^Bearer\s+(.+)$/i.exec(auth ?? "")?.[1];
   const claims = token ? verifyToken<McpTokenClaims>(token, deps.env.MCP_TOKEN_SECRET, MCP_TOKEN_AUDIENCE) : null;
+  if (!claims && token && deps.auth && deps.delivery) {
+    const person = await deps.auth.authenticateToken(token).catch(() => null);
+    if (person) return handleUserMcp({ db: deps.db, delivery: deps.delivery, log: deps.log }, person, req, res, body);
+  }
   if (!claims) {
     res.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" }).end(JSON.stringify({ error: "unauthorized" }));
     return;

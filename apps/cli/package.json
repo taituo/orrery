@@ -1,0 +1,20 @@
+{
+  "name": "@orrery/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Command-line client for Orrery: chat with bots, approvals, groups, tokens, agent credentials.",
+  "bin": { "orrery": "./dist/orrery.mjs" },
+  "exports": {
+    ".": {
+      "@orrery/source": "./src/index.ts",
+      "default": "./dist/orrery.mjs"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/bundle-cli.mjs"
+  },
+  "devDependencies": {
+    "@orrery/core": "workspace:*"
+  }
+}

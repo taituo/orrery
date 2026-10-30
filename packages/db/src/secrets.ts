@@ -31,6 +31,9 @@ export function decryptSecret(blob: Buffer, rawKey: string | undefined): string 
   return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
 }
 
+/** Team secrets named `agent-env.<NAME>` become environment variables in the team's bot computers. */
+export const AGENT_ENV_SECRET_PREFIX = "agent-env.";
+
 export const secrets = {
   async put(db: Queryable, teamId: string, name: string, value: string, rawKey: string | undefined): Promise<void> {
     if (!/^[a-zA-Z0-9_.-]{1,128}$/.test(name)) throw new OrreryError("bad_request", "invalid secret name");
@@ -45,6 +48,11 @@ export const secrets = {
   },
   async delete(db: Queryable, teamId: string, name: string): Promise<void> {
     await db.query("DELETE FROM secrets WHERE team_id = $1 AND name = $2", [teamId, name]);
+  },
+  /** Decrypted values of every secret whose name starts with `prefix`, keyed by the rest of the name. */
+  async valuesWithPrefix(db: Queryable, teamId: string, prefix: string, rawKey: string | undefined): Promise<Record<string, string>> {
+    const r = await db.query("SELECT name, ciphertext FROM secrets WHERE team_id = $1 AND starts_with(name, $2) ORDER BY name", [teamId, prefix]);
+    return Object.fromEntries(r.rows.map((x) => [(x.name as string).slice(prefix.length), decryptSecret(x.ciphertext as Buffer, rawKey)]));
   },
   /** Resolve `secret://name` references; other values pass through unchanged. */
   async resolve(db: Queryable, teamId: string, value: string, rawKey: string | undefined): Promise<string> {

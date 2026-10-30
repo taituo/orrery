@@ -10,6 +10,8 @@
     "apps/api/src/**/*.ts",
     "apps/api/test/**/*.ts",
     "apps/worker/src/**/*.ts",
-    "apps/worker/test/**/*.ts"
+    "apps/worker/test/**/*.ts",
+    "apps/cli/src/**/*.ts",
+    "apps/cli/test/**/*.ts"
   ]
 }

@@ -24,13 +24,14 @@ import {
   type InboundMessage,
   type RunEventEnvelope,
 } from "@orrery/core";
-import { approvals, audit, bots, computers, events, knowledge, messages, routines, runs, secrets, steering, threads, usage, withTx, type Db } from "@orrery/db";
+import { AGENT_ENV_SECRET_PREFIX, apiTokens, approvals, rooms, audit, bots, computers, events, knowledge, messages, routines, runs, secrets, steering, threads, usage, users, withTx, type Db } from "@orrery/db";
 import type { MemoryService } from "@orrery/memory";
 import type { KnowledgeService } from "@orrery/rag";
 import { openCodeModelProblem, type ProviderRegistry } from "@orrery/providers";
 import { langfuseTraceUrl, scoreTrace, type Telemetry } from "@orrery/observability";
 import type { Logger } from "pino";
-import { requireRole, type Authenticator, type Principal } from "./auth.js";
+import { hasRole, newApiToken, requireRole, type Authenticator, type Principal } from "./auth.js";
+import { routeGroupMessage } from "./groups.js";
 import type { Delivery } from "./delivery.js";
 import { OpenApiRegistry } from "./openapi.js";
 import type { EventHub } from "./sse.js";
@@ -83,6 +84,8 @@ function canSteer(bot: Bot, run?: { provider: string | null }): boolean {
   if (run?.provider === "openai" || run?.provider === "opencode-acp") return false;
   return bot.primary.kind === "kiro-acp" || bot.primary.kind === "acp";
 }
+
+const RANK_OF: Record<Role, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
 
 function isTemporalUnavailable(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -264,9 +267,15 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
   });
   route("post", "/v1/threads/:id/messages", { summary: "Send a message (queue a turn or steer the running one)", tag: "threads", role: "member", body: SendMessageSchema, status: 202 }, async (c, { p, body }) => {
     const t = await mustThread(p, c.req.param("id")!);
+    const parts: ContentPart[] = body.parts ?? [{ type: "text", text: body.text! }];
+    if (t.channel === "group") {
+      const g = await rooms.getByThread(db, t.id);
+      if (!g) throw new OrreryError("conflict", "the group was archived");
+      const r = await routeGroupMessage({ db, delivery: deps.delivery }, p, g, parts, { type: "user", id: p.userId, ...(p.name ? { name: p.name } : {}) });
+      return { messageId: r.messageId, threadId: t.id, targets: r.targets, mode: "queue", delivery: r.delivered ? "delivered" : "pending" };
+    }
     const bot = await mustBot(p, t.botId);
     if (bot.status === "archived") throw new OrreryError("conflict", "bot is archived");
-    const parts: ContentPart[] = body.parts ?? [{ type: "text", text: body.text! }];
     const author = { type: "user" as const, id: p.userId, ...(p.name ? { name: p.name } : {}) };
     // Agents that cannot take guidance mid-turn get it as the next turn instead.
     if (body.mode === "steer" && canSteer(bot)) {
@@ -285,6 +294,69 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
       { threadId: t.id, botId: bot.id, teamId: p.teamId, channel: t.channel, author, parts, replyTo: null, ...(body.forceProvider ? { forceProvider: body.forceProvider } : {}) },
     );
     return { messageId: msg.id, threadId: t.id, mode: "queue", delivery: delivered ? "delivered" : "pending" };
+  });
+
+  /* ---------------------------------------------------------------- groups */
+  const mustGroup = async (p: Principal, id: string) => {
+    const g = await rooms.get(db, p.teamId, id);
+    if (!g) throw new OrreryError("not_found", "group not found");
+    return g;
+  };
+  const groupBots = async (p: Principal, botIds: string[]) => {
+    const unique = [...new Set(botIds)];
+    for (const id of unique) {
+      const b = await bots.get(db, p.teamId, id);
+      if (!b || b.status === "archived") throw new OrreryError("bad_request", `bot ${id} not found`);
+    }
+    return unique;
+  };
+  const GroupCreateSchema = z.object({
+    name: z.string().trim().min(1).max(80).regex(/^[^@#\s][^@]*$/, "no @ in group names"),
+    topic: z.string().max(500).default(""),
+    /** 1–6 bots; the first one leads (answers messages that mention no one). */
+    botIds: z.array(z.string()).min(1).max(6),
+  });
+  route("get", "/v1/groups", { summary: "Group conversations", tag: "groups" }, async (_c, { p }) => ({ groups: await rooms.list(db, p.teamId) }));
+  route("post", "/v1/groups", { summary: "Create a group: bots (the first leads) and people in one conversation", tag: "groups", role: "member", body: GroupCreateSchema, status: 201 }, async (_c, { p, body }) => {
+    const botIds = await groupBots(p, body.botIds);
+    try {
+      const group = await withTx(db, async (tx) => {
+        const thread = await threads.create(tx, { teamId: p.teamId, botId: botIds[0]!, channel: "group", createdBy: p.userId, title: body.name });
+        return rooms.create(tx, { id: newId("room"), teamId: p.teamId, name: body.name, topic: body.topic, threadId: thread.id, createdBy: p.userId, botIds });
+      });
+      await log(p, "group.create", group.id, { name: group.name, bots: botIds });
+      return { group };
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505") throw new OrreryError("conflict", `a group named "${body.name}" already exists`);
+      throw err;
+    }
+  });
+  route("get", "/v1/groups/:id", { summary: "Get a group", tag: "groups" }, async (c, { p }) => ({ group: await mustGroup(p, c.req.param("id")!) }));
+  route("patch", "/v1/groups/:id", { summary: "Rename a group, change its topic or its bots", tag: "groups", role: "member", body: GroupCreateSchema.partial() }, async (c, { p, body }) => {
+    const g = await mustGroup(p, c.req.param("id")!);
+    await withTx(db, async (tx) => {
+      await rooms.update(tx, p.teamId, g.id, { ...(body.name ? { name: body.name } : {}), ...(body.topic !== undefined ? { topic: body.topic } : {}) });
+      if (body.name) await threads.setTitle(tx, g.threadId, body.name);
+      if (body.botIds) {
+        const botIds = await groupBots(p, body.botIds);
+        await rooms.setMembers(tx, g.id, botIds);
+        await tx.query("UPDATE threads SET bot_id = $2 WHERE id = $1", [g.threadId, botIds[0]]);
+      }
+    });
+    await log(p, "group.update", g.id, { fields: Object.keys(body) });
+    return { group: await mustGroup(p, g.id) };
+  });
+  route("delete", "/v1/groups/:id", { summary: "Archive a group", tag: "groups", role: "member" }, async (c, { p }) => {
+    const g = await mustGroup(p, c.req.param("id")!);
+    await rooms.archive(db, p.teamId, g.id);
+    await threads.archive(db, p.teamId, g.threadId);
+    await log(p, "group.archive", g.id);
+  });
+  route("post", "/v1/groups/:id/messages", { summary: "Post to a group: mentioned bots answer (@name, @all), otherwise the lead", tag: "groups", role: "member", body: SendMessageSchema, status: 202 }, async (c, { p, body }) => {
+    const g = await mustGroup(p, c.req.param("id")!);
+    const author = { type: "user" as const, id: p.userId, ...(p.name ? { name: p.name } : {}) };
+    const r = await routeGroupMessage({ db, delivery: deps.delivery }, p, g, body.parts ?? [{ type: "text", text: body.text! }], author);
+    return { messageId: r.messageId, threadId: g.threadId, targets: r.targets, mode: "queue", delivery: r.delivered ? "delivered" : "pending" };
   });
 
   /* ---------------------------------------------------------------- runs */
@@ -478,7 +550,7 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
   route("get", "/v1/usage", { summary: "Usage per bot and provider", tag: "governance", query: z.object({ days: z.coerce.number().int().min(1).max(365).default(30) }) }, async (_c, { p, query }) => ({ since: new Date(Date.now() - query.days * 86400_000).toISOString(), rows: await usage.summary(db, p.teamId, new Date(Date.now() - query.days * 86400_000).toISOString()) }));
   route("get", "/v1/audit", { summary: "Audit log", tag: "governance", role: "admin" }, async (_c, { p }) => ({ entries: await audit.list(db, p.teamId) }));
   route("get", "/v1/computers", { summary: "Bot computers", tag: "governance" }, async (_c, { p }) => ({ computers: await computers.list(db, p.teamId) }));
-  route("get", "/v1/secrets", { summary: "Secret names (values are never returned)", tag: "governance", role: "admin" }, async (_c, { p }) => ({ secrets: await secrets.list(db, p.teamId) }));
+  route("get", "/v1/secrets", { summary: "Secret names (values are never returned)", tag: "governance", role: "admin" }, async (_c, { p }) => ({ secrets: (await secrets.list(db, p.teamId)).filter((x) => !x.name.startsWith("agent-env.")) }));
   route("put", "/v1/secrets/:name", { summary: "Store a secret (reference it as secret://name)", tag: "governance", role: "admin", body: z.object({ value: z.string().min(1).max(100_000) }) }, async (c, { p, body }) => {
     await secrets.put(db, p.teamId, c.req.param("name")!, body.value, env.ENCRYPTION_KEY);
     await log(p, "secret.put", c.req.param("name")!);
@@ -486,6 +558,95 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
   route("delete", "/v1/secrets/:name", { summary: "Delete a secret", tag: "governance", role: "admin" }, async (c, { p }) => {
     await secrets.delete(db, p.teamId, c.req.param("name")!);
     await log(p, "secret.delete", c.req.param("name")!);
+  });
+
+  /* ---------------------------------------------------------------- API tokens */
+  const TokenCreateSchema = z.object({
+    name: z.string().min(1).max(100),
+    role: z.enum(["owner", "admin", "member", "viewer"]).optional(),
+    /** Admins can mint a token for a named person (installs without an identity provider). */
+    forUser: z.object({ name: z.string().min(1).max(100) }).optional(),
+    expiresInDays: z.number().int().min(1).max(3650).optional(),
+  });
+  route("get", "/v1/tokens", { summary: "API tokens (yours; admins see the team's)", tag: "platform" }, async (_c, { p }) => ({
+    tokens: await apiTokens.list(db, p.teamId, hasRole(p, "admin") ? undefined : p.userId),
+  }));
+  route("post", "/v1/tokens", { summary: "Create an API token for the CLI, MCP clients or scripts (shown once)", tag: "platform", role: "member", body: TokenCreateSchema, status: 201 }, async (_c, { p, body }) => {
+    const role = body.role ?? p.role;
+    if (RANK_OF[role] > RANK_OF[p.role]) throw new OrreryError("forbidden", "a token cannot have a higher role than its creator");
+    if (body.forUser) requireRole(p, "admin");
+    let userId = p.userId;
+    let userName = p.name;
+    if (body.forUser) {
+      const u = await users.upsertExternal(db, { teamId: p.teamId, externalId: `local:${body.forUser.name.trim().toLowerCase()}`, name: body.forUser.name.trim(), role });
+      userId = u.id;
+      userName = u.name;
+    }
+    const t = newApiToken();
+    const row = await apiTokens.create(db, {
+      id: newId("apiToken"),
+      teamId: p.teamId,
+      userId,
+      userName,
+      name: body.name,
+      role,
+      tokenHash: t.hash,
+      prefix: t.prefix,
+      createdBy: p.userId,
+      expiresAt: body.expiresInDays ? new Date(Date.now() + body.expiresInDays * 86400_000).toISOString() : null,
+    });
+    await log(p, "token.create", row.id, { name: row.name, role, forUser: userName });
+    return { token: t.token, apiToken: row };
+  });
+  route("delete", "/v1/tokens/:id", { summary: "Revoke an API token", tag: "platform", role: "member" }, async (c, { p }) => {
+    const row = await apiTokens.get(db, p.teamId, c.req.param("id")!);
+    if (!row) throw new OrreryError("not_found", "token not found");
+    if (row.userId !== p.userId && row.createdBy !== p.userId) requireRole(p, "admin");
+    await apiTokens.revoke(db, p.teamId, row.id);
+    deps.auth.forget(row.id);
+    await log(p, "token.revoke", row.id);
+  });
+
+  /* ---------------------------------------------------------------- agent environment */
+  // Credentials agents use themselves (KIRO_API_KEY, ANTHROPIC_API_KEY, …), stored encrypted and
+  // delivered to this team's bot computers as environment variables.
+  const AGENT_ENV_PREFIX = AGENT_ENV_SECRET_PREFIX;
+  const RESERVED_ENV = new Set(["PATH", "HOME", "USER", "SHELL", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "COMPUTER_ID", "AGENT_KIND", "AGENT_COMMAND", "AGENT_ARGS", "WORKSPACE_ROOT", "GATEWAY_PORT", "GATEWAY_TOKEN_KEY", "GATEWAY_TOKEN_SECRET", "OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_PATH", "KIRO_CLI_PATH"]);
+  const envName = (raw: string) => {
+    if (!/^[A-Z][A-Z0-9_]{1,127}$/.test(raw)) throw new OrreryError("bad_request", "variable names are UPPER_SNAKE_CASE");
+    if (RESERVED_ENV.has(raw)) throw new OrreryError("bad_request", `${raw} is set by Orrery and cannot be overridden`);
+    return raw;
+  };
+  route("get", "/v1/agent-env", { summary: "Agent credentials set for bot computers (names only)", tag: "governance", role: "admin" }, async (_c, { p }) => ({
+    variables: (await secrets.list(db, p.teamId)).filter((x) => x.name.startsWith(AGENT_ENV_PREFIX)).map((x) => ({ name: x.name.slice(AGENT_ENV_PREFIX.length), updatedAt: x.createdAt })),
+  }));
+  route("put", "/v1/agent-env/:name", { summary: "Set an agent credential (bot computers restart with it before their next turn)", tag: "governance", role: "admin", body: z.object({ value: z.string().min(1).max(20_000) }) }, async (c, { p, body }) => {
+    const name = envName(c.req.param("name")!);
+    await secrets.put(db, p.teamId, `${AGENT_ENV_PREFIX}${name}`, body.value, env.ENCRYPTION_KEY);
+    await log(p, "agent_env.put", name);
+  });
+  route("delete", "/v1/agent-env/:name", { summary: "Remove an agent credential", tag: "governance", role: "admin" }, async (c, { p }) => {
+    const name = envName(c.req.param("name")!);
+    await secrets.delete(db, p.teamId, `${AGENT_ENV_PREFIX}${name}`);
+    await log(p, "agent_env.delete", name);
+  });
+
+  /* ---------------------------------------------------------------- setup status */
+  route("get", "/v1/setup", { summary: "What this install has configured (first-run checklist)", tag: "platform" }, async (_c, { p }) => {
+    const agentEnv = (await secrets.list(db, p.teamId)).filter((x) => x.name.startsWith(AGENT_ENV_PREFIX)).map((x) => x.name.slice(AGENT_ENV_PREFIX.length));
+    const chat = deps.providers.configs.filter((c) => c.kind === "openai" && c.models.chat.length);
+    const botCount = (await bots.list(db, p.teamId)).length;
+    return {
+      auth: { oidc: Boolean(env.OIDC_ISSUER), adminToken: Boolean(env.ADMIN_TOKEN), via: p.via ?? null },
+      computers: env.COMPUTER_PROVIDER,
+      agentEnv,
+      providers: { chat: chat.map((c) => c.id), decisions: deps.providers.decisions()?.id ?? null },
+      engines: {
+        kiro: agentEnv.includes("KIRO_API_KEY") ? "configured" : "needs KIRO_API_KEY (or a Kiro secret in the cluster)",
+        opencode: chat.length || agentEnv.some((n) => /_API_KEY$/.test(n) && n !== "KIRO_API_KEY") ? "configured" : "needs a model: an OpenAI-compatible provider or a provider key such as ANTHROPIC_API_KEY",
+      },
+      bots: botCount,
+    };
   });
 
   /* ---------------------------------------------------------------- inbound webhooks */

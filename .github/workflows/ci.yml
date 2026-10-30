@@ -220,6 +220,104 @@ jobs:
             echo "::error title=$f::$msg"
           done
 
+  kubernetes:
+    name: kubernetes (kind + helm install, out of the box)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    needs: [test]
+    env:
+      NS: orrery
+    steps:
+      - name: free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" && df -h /
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: docker/setup-buildx-action@v3
+      - { name: build api, uses: docker/build-push-action@v6, with: { context: ., file: deploy/docker/Dockerfile, target: api, load: true, tags: "ghcr.io/taituo/orrery-api:ci", cache-from: "type=gha,scope=api" } }
+      - { name: build worker, uses: docker/build-push-action@v6, with: { context: ., file: deploy/docker/Dockerfile, target: worker, load: true, tags: "ghcr.io/taituo/orrery-worker:ci", cache-from: "type=gha,scope=worker" } }
+      - { name: build web, uses: docker/build-push-action@v6, with: { context: ., file: deploy/docker/Dockerfile, target: web, load: true, tags: "ghcr.io/taituo/orrery-web:ci", cache-from: "type=gha,scope=web" } }
+      - { name: build computer, uses: docker/build-push-action@v6, with: { context: ., file: deploy/docker/Dockerfile, target: computer, load: true, tags: "ghcr.io/taituo/orrery-computer:ci", cache-from: "type=gha,scope=computer" } }
+      - { name: build computer-mock, uses: docker/build-push-action@v6, with: { context: ., file: deploy/docker/Dockerfile, target: computer-mock, load: true, tags: "ghcr.io/taituo/orrery-computer-mock:ci", cache-from: "type=gha,scope=computer-mock" } }
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: orrery
+          config: deploy/ci/kind.yaml
+          wait: 0s
+      - name: Calico (enforced NetworkPolicies)
+        run: |
+          kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/calico.yaml
+          kubectl -n kube-system rollout status ds/calico-node --timeout=300s
+          kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      - name: load images into the cluster
+        run: for t in api worker web computer computer-mock; do kind load docker-image --name orrery ghcr.io/taituo/orrery-$t:ci; done
+      - name: helm install (chart defaults + CI images and a fake model provider)
+        run: |
+          kubectl create namespace $NS
+          kubectl -n $NS apply -f deploy/ci/fake-models.yaml
+          helm install orrery deploy/helm/orrery -n $NS -f deploy/ci/values-kind.yaml --wait --timeout 15m
+          kubectl -n $NS get pods -o wide
+      - name: console, API, CLI and MCP through one port-forward
+        run: |
+          kubectl -n $NS port-forward svc/orrery-web 8080:8080 > pf.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS localhost:8080/ >/dev/null 2>&1 && break; sleep 2; done
+          curl -fsS localhost:8080/ | grep -q '<div id="root">'
+          curl -fsS localhost:8080/readyz
+          TOKEN=$(kubectl -n $NS get secret orrery-platform -o jsonpath='{.data.admin-token}' | base64 -d)
+          echo "::add-mask::$TOKEN"
+          echo "TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          curl -fsSLo orrery localhost:8080/cli/orrery.mjs && chmod +x orrery
+          ./orrery login --url http://localhost:8080 --token "$TOKEN"
+          ./orrery whoami
+          ./orrery status
+          # MCP for people: initialize, list tools, call one
+          H=(-H "authorization: Bearer $TOKEN" -H "content-type: application/json" -H "accept: application/json, text/event-stream")
+          curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' | grep -q '"orrery"'
+          curl -fsS "${H[@]}" localhost:8080/mcp -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -q '"ask_bot"'
+      - name: end to end on Kubernetes (mock Kiro computers; approval, session reuse, ACP worker killed mid-turn, group hand-off)
+        run: >
+          node scripts/e2e.mjs --api http://localhost:8080 --token "$TOKEN" --mock --timeout 600
+          --computer-image ghcr.io/taituo/orrery-computer-mock:ci
+          --crash-cmd "kubectl -n $NS delete pod -l app.kubernetes.io/component=worker-acp --wait=false --grace-period=0 --force"
+          --restart-cmd "kubectl -n $NS rollout status deploy/orrery-worker-acp --timeout=300s"
+      - name: end to end on Kubernetes (real OpenCode on a platform provider; worker killed while waiting for approval)
+        run: >
+          node scripts/e2e.mjs --api http://localhost:8080 --token "$TOKEN" --agent opencode --model orrery-fake/fake-small --timeout 600
+          --crash-cmd "kubectl -n $NS delete pod -l app.kubernetes.io/component=worker-acp --wait=false --grace-period=0 --force"
+          --restart-cmd "kubectl -n $NS rollout status deploy/orrery-worker-acp --timeout=300s"
+      - name: CLI against the cluster
+        run: |
+          ./orrery bots create cli-bot --engine opencode --model orrery-fake/fake-small
+          ./orrery ask cli-bot "run: echo from-the-cli" --approve | tee ask.txt
+          grep -q from-the-cli ask.txt
+          ./orrery tokens create ci-token --role member > member.token
+          ORRERY_TOKEN=$(cat member.token) ./orrery whoami | grep -q member
+      - name: helm upgrade keeps secrets and data
+        run: |
+          helm upgrade orrery deploy/helm/orrery -n $NS -f deploy/ci/values-kind.yaml --wait --timeout 10m
+          [ "$(kubectl -n $NS get secret orrery-platform -o jsonpath='{.data.admin-token}' | base64 -d)" = "$TOKEN" ]
+          pkill -f "port-forward svc/orrery-web" || true
+          kubectl -n $NS port-forward svc/orrery-web 8080:8080 > pf2.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS localhost:8080/readyz >/dev/null 2>&1 && break; sleep 2; done
+          ./orrery bots | grep -q cli-bot
+      - name: diagnostics
+        if: failure()
+        run: |
+          {
+            kubectl get pods -A -o wide
+            kubectl -n $NS get events --sort-by=.lastTimestamp | tail -40
+            kubectl -n orrery-computers get all,secrets,cm -o wide
+            kubectl -n orrery-computers get events --sort-by=.lastTimestamp | tail -40
+            for d in api worker-agent worker-acp worker-memory web temporal postgresql; do echo "== $d"; kubectl -n $NS logs -l app.kubernetes.io/component=$d --tail=80 --all-containers 2>&1; done
+            for p in $(kubectl -n orrery-computers get pods -o name); do echo "== $p"; kubectl -n orrery-computers describe $p | tail -30; kubectl -n orrery-computers logs $p --tail=80 2>&1; done
+          } > k8s.txt 2>&1 || true
+          cat k8s.txt
+          msg=$(tail -c 60000 k8s.txt | sed -e 's/%/%25/g' -e 's/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=kubernetes diagnostics::$msg"
+
   e2e-kiro:
     name: end-to-end with real kiro-cli (needs KIRO_API_KEY secret)
     runs-on: ubuntu-latest

@@ -33,6 +33,26 @@ app.kubernetes.io/component: {{ .component }}
 {{- printf "%s/%s:%s" .ctx.Values.image.registry (index .ctx.Values.images .name) $tag -}}
 {{- end -}}
 
+{{/* Temporal frontend: the bundled server, or config.temporal.address. */}}
+{{- define "orrery.temporalAddress" -}}
+{{- if .Values.temporalServer.enabled -}}
+{{- printf "%s-temporal.%s.svc:7233" (include "orrery.fullname" .) .Release.Namespace -}}
+{{- else -}}
+{{- required "config.temporal.address is required when temporalServer.enabled is false" .Values.config.temporal.address -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Public URL: explicit, else the ingress host, else the port-forward address. */}}
+{{- define "orrery.publicBaseUrl" -}}
+{{- if .Values.config.publicBaseUrl -}}
+{{- .Values.config.publicBaseUrl | trimSuffix "/" -}}
+{{- else if and .Values.ingress.enabled .Values.ingress.host -}}
+{{- printf "%s://%s" (ternary "https" "http" .Values.ingress.tls.enabled) .Values.ingress.host -}}
+{{- else -}}
+http://localhost:8080
+{{- end -}}
+{{- end -}}
+
 {{- define "orrery.secretName" -}}
 {{- default (printf "%s-platform" (include "orrery.fullname" .)) .Values.secrets.existingSecret -}}
 {{- end -}}
@@ -72,6 +92,10 @@ key: database-url
   valueFrom: { secretKeyRef: { name: {{ default (include "orrery.secretName" .) .Values.config.langfuse.existingSecret }}, key: {{ ternary "public-key" "langfuse-public-key" (ne .Values.config.langfuse.existingSecret "") }} } }
 - name: LANGFUSE_SECRET_KEY
   valueFrom: { secretKeyRef: { name: {{ default (include "orrery.secretName" .) .Values.config.langfuse.existingSecret }}, key: {{ ternary "secret-key" "langfuse-secret-key" (ne .Values.config.langfuse.existingSecret "") }} } }
+{{- end }}
+{{- if .Values.config.adminToken.enabled }}
+- name: ADMIN_TOKEN
+  valueFrom: { secretKeyRef: { name: {{ include "orrery.secretName" . }}, key: admin-token } }
 {{- end }}
 {{- if .Values.config.devAuthToken }}
 - name: DEV_AUTH_TOKEN

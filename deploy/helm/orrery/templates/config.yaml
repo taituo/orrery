@@ -11,14 +11,14 @@ data:
   NODE_ENV: {{ ternary "production" "development" (eq .Values.config.environment "production") | quote }}
   DEPLOYMENT_ENV: {{ .Values.config.environment | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
-  DATABASE_SSL: {{ .Values.config.database.ssl | quote }}
+  DATABASE_SSL: {{ and .Values.config.database.ssl (not .Values.postgresql.enabled) | quote }}
   DATABASE_POOL_MAX: {{ .Values.config.database.poolMax | quote }}
   ORRERY_VECTOR_DIMS: {{ .Values.config.database.vectorDims | quote }}
-  TEMPORAL_ADDRESS: {{ .Values.config.temporal.address | quote }}
+  TEMPORAL_ADDRESS: {{ include "orrery.temporalAddress" . | quote }}
   TEMPORAL_NAMESPACE: {{ .Values.config.temporal.namespace | quote }}
   TEMPORAL_TASK_QUEUE_PREFIX: {{ .Values.config.temporal.taskQueuePrefix | quote }}
-  PUBLIC_BASE_URL: {{ .Values.config.publicBaseUrl | quote }}
-  WEB_ORIGINS: {{ join "," (prepend .Values.config.webOrigins .Values.config.publicBaseUrl) | quote }}
+  PUBLIC_BASE_URL: {{ include "orrery.publicBaseUrl" . | quote }}
+  WEB_ORIGINS: {{ join "," (prepend .Values.config.webOrigins (include "orrery.publicBaseUrl" .)) | quote }}
   INTERNAL_API_URL: {{ printf "http://%s.%s.svc:8080" (include "orrery.apiService" .) .Release.Namespace | quote }}
   {{- with .Values.config.langfuse.baseUrl }}
   LANGFUSE_BASE_URL: {{ . | quote }}

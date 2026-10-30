@@ -1,0 +1,9 @@
+# kind cluster for the Kubernetes CI job: Calico instead of kindnet so NetworkPolicies are
+# enforced, like on most production clusters.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: 192.168.0.0/16
+nodes:
+  - role: control-plane

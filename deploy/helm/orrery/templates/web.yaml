@@ -37,8 +37,10 @@ spec:
           ports:
             - { name: http, containerPort: 8080 }
           env:
-            # Same-origin API through the Ingress; leave API_UPSTREAM empty.
+            # Same-origin API: the console proxies /v1, /mcp and /docs to the API service (also
+            # what makes a plain port-forward or LoadBalancer work without an Ingress).
             - { name: ORRERY_API_URL, value: "" }
+            - { name: API_UPSTREAM, value: {{ printf "http://%s.%s.svc:8080" (include "orrery.apiService" .) .Release.Namespace | quote }} }
             - { name: ORRERY_OIDC_ISSUER, value: {{ .Values.config.oidc.issuer | quote }} }
             - { name: ORRERY_OIDC_CLIENT_ID, value: {{ .Values.config.oidc.webClientId | quote }} }
             - { name: ORRERY_OIDC_SCOPE, value: {{ .Values.config.oidc.webScope | quote }} }
@@ -81,8 +83,9 @@ metadata:
 spec:
   selector:
     {{- include "orrery.selector" (dict "ctx" . "component" "web") | nindent 4 }}
+  type: {{ .Values.web.service.type }}
   ports:
-    - { name: http, port: 8080, targetPort: http }
+    - { name: http, port: {{ .Values.web.service.port }}, targetPort: http }
 {{- with .Values.web.podDisruptionBudget }}
 ---
 apiVersion: policy/v1

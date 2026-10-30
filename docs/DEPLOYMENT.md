@@ -35,24 +35,58 @@ node scripts/e2e.mjs --api http://localhost:8090 --token dev-token --mock \
 
 ## Kubernetes (Helm)
 
-**Prerequisites**
-- Kubernetes 1.27 or newer.
-- PostgreSQL 16 with the `vector` and `pg_trgm` extensions available, such as CloudNativePG, RDS or Cloud SQL.
-- Temporal: self-hosted with the official chart, or Temporal Cloud.
-- Optional: Langfuse, an OIDC provider, Cilium (per-bot FQDN egress), KEDA (queue-based autoscaling), and gVisor or Kata (sandboxed agent pods).
+The chart installs a complete, working platform with no values: API, workers, console, a bundled PostgreSQL 16 + pgvector, a bundled Temporal server, generated secrets and a bootstrap admin token. CI installs it this way on a kind cluster, with NetworkPolicies enforced by Calico, and runs the end-to-end checks against it.
 
 ```sh
-helm install orrery deploy/helm/orrery -n orrery --create-namespace \
-  --set config.publicBaseUrl=https://orrery.example.com \
-  --set ingress.host=orrery.example.com \
-  --set config.database.existingSecret=orrery-db \
-  --set config.temporal.address=temporal-frontend.temporal:7233 \
-  --set config.oidc.issuer=https://idp.example.com/realms/orrery \
-  --set config.oidc.webClientId=orrery-web \
-  --set computers.kiro.existingSecret=orrery-kiro
+curl -fsSL https://raw.githubusercontent.com/taituo/orrery/main/deploy/install.sh | sh
+# or, from a checkout:
+helm install orrery deploy/helm/orrery -n orrery --create-namespace
 ```
 
-To try it on a local cluster with the bundled Postgres, use `-f deploy/helm/orrery/values-dev.yaml`.
+Then:
+
+```sh
+kubectl -n orrery port-forward svc/orrery-web 8080:8080      # console, API, /mcp and /docs
+kubectl -n orrery get secret orrery-platform -o jsonpath='{.data.admin-token}' | base64 -d
+```
+
+1. Open http://localhost:8080 and sign in with the admin token.
+2. In **Settings → Agent credentials**, set `KIRO_API_KEY` for Kiro bots or a model key such as `ANTHROPIC_API_KEY` for OpenCode bots. Bots can also use the platform's OpenAI-compatible providers.
+3. Create a bot and talk to it.
+
+The install serves its own CLI:
+
+```sh
+curl -fsSLo orrery http://localhost:8080/cli/orrery.mjs && chmod +x orrery   # Node.js 20+
+./orrery login --url http://localhost:8080 --token <token>
+./orrery mcp                                                              # config for MCP clients
+```
+
+The installer reads optional environment variables: `ORRERY_NAMESPACE`, `ORRERY_RELEASE`, `ORRERY_IMAGE_TAG`, `KIRO_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and others. Extra arguments are passed to `helm upgrade --install`.
+
+**Production.** Point the chart at managed services and an identity provider, and turn the bundled ones off:
+
+```sh
+helm upgrade --install orrery deploy/helm/orrery -n orrery --create-namespace \
+  --set image.tag=sha-<commit> \
+  --set ingress.enabled=true --set ingress.host=orrery.example.com --set ingress.tls.enabled=true \
+  --set postgresql.enabled=false --set config.database.existingSecret=orrery-db \
+  --set temporalServer.enabled=false --set config.temporal.address=temporal-frontend.temporal:7233 \
+  --set config.oidc.issuer=https://idp.example.com/realms/orrery --set config.oidc.webClientId=orrery-web
+```
+
+Production also needs:
+- Kubernetes 1.27 or newer.
+- PostgreSQL 16 with `vector` and `pg_trgm` (CloudNativePG, RDS, Cloud SQL, …).
+- Temporal (the official chart or Temporal Cloud).
+
+Optional:
+- Langfuse.
+- Cilium, for per-bot FQDN egress.
+- KEDA, for queue-based autoscaling.
+- gVisor or Kata, for sandboxed agent pods.
+
+The admin token can stay as a break-glass owner, or you can set `config.adminToken.enabled=false` once OIDC works.
 
 ### What the chart creates
 
@@ -60,9 +94,11 @@ To try it on a local cluster with the bundled Postgres, use `-f deploy/helm/orre
 - API, with an HPA and a PDB.
 - One worker Deployment per role (`agent`, `acp`, `memory`), each scaled by an HPA or by the KEDA Temporal scaler.
 - The console.
-- An Ingress: `/v1`, `/mcp`, `/openapi.json` and `/docs` go to the API; everything else goes to the console.
+- The console proxies `/v1`, `/mcp`, `/openapi.json` and `/docs` to the API, so a single address serves everything (port-forward, LoadBalancer or Ingress).
+- Optionally, an Ingress (`ingress.enabled`, `ingress.host`).
 - A ConfigMap that includes `providers.yaml`.
-- The platform Secret: MCP and gateway token secrets and the encryption key. They are generated once and kept across upgrades.
+- The platform Secret: MCP and gateway token secrets, the encryption key and the admin token. They are generated once and kept across upgrades.
+- Unless disabled, single-pod PostgreSQL + pgvector and Temporal (`temporal server start-dev` with SQLite on a volume, Web UI on port 8233).
 - A migration hook Job for upgrades. Fresh installs migrate on start, using an advisory lock.
 
 **Computers namespace** (the restricted Pod Security Standard is enforced here)

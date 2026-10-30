@@ -9,14 +9,17 @@ import {
   nowIso,
   partsToText,
   truncate,
+  GROUP_MAX_HOPS,
+  mentionedBots,
   type AgentEvent,
   type Bot,
   type ContentPart,
+  type Group,
   type InboundMessage,
   type ToolKind,
   type ToolRequestFacts,
 } from "@orrery/core";
-import { approvals, bots, computers, delegations, events, messages, outbox, routines, runs, steering, threads, usage, withTx } from "@orrery/db";
+import { approvals, bots, computers, delegations, events, messages, outbox, rooms, routines, runs, steering, threads, usage, withTx } from "@orrery/db";
 import { MemoryService } from "@orrery/memory";
 import { KnowledgeService } from "@orrery/rag";
 import { assessToolRisk, decideRoute, toOpenAIContent, type ChatMessage } from "@orrery/providers";
@@ -167,7 +170,25 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
         }
         const ids = new Set(input.messages.map((m) => m.messageId));
         const history = (await messages.list(db, input.threadId, 24)).filter((m) => !ids.has(m.id));
-        const built = buildPrompt({ bot, messages: input.messages, memoryBlock, knowledgeBlock, nowIso: nowIso(), history });
+        // Group conversations: what others said since this bot last spoke (its agent session
+        // only knows its own turns).
+        const group = thread.channel === "group" ? await rooms.getByThread(db, thread.id) : null;
+        let groupContext: Parameters<typeof buildPrompt>[0]["group"];
+        if (group) {
+          const recent = await messages.list(db, input.threadId, 80);
+          let last = -1;
+          recent.forEach((m, i) => {
+            if (m.role === "assistant" && m.author.id === bot.id) last = i;
+          });
+          groupContext = {
+            name: group.name,
+            topic: group.topic,
+            members: group.members.map((m) => ({ name: m.name, lead: m.lead })),
+            recent: recent.slice(last + 1).filter((m) => !ids.has(m.id) && m.role !== "system").slice(-30),
+            botNames: new Map(group.members.map((m) => [m.botId, m.name])),
+          };
+        }
+        const built = buildPrompt({ bot, messages: input.messages, memoryBlock, knowledgeBlock, nowIso: nowIso(), history, ...(groupContext ? { group: groupContext } : {}) });
         const stored: StoredRunInput = { ...built, traceId };
         await runs.setInput(db, input.runId, stored as unknown as Record<string, unknown>);
         await sink.close();
@@ -185,6 +206,7 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
           approvalTimeoutMinutes: bot.policy.approvalTimeoutMinutes,
           replyTo: input.messages.find((m) => m.replyTo)?.replyTo ?? null,
           authorUserId: first.author.type === "user" ? first.author.id : null,
+          hops: Math.max(0, ...input.messages.map((m) => m.hops ?? 0)),
         } satisfies PreparedTurn;
       }),
 
@@ -440,11 +462,17 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
         const current = await threads.getById(db, p.threadId);
         if (current) {
           const requeued = await withTx(db, (tx) => steering.requeue(tx, { id: p.runId, teamId: p.teamId, botId: p.botId, threadId: p.threadId, channel: current.channel }));
-          for (const m of requeued) await deliverInbound(deps, m).then(() => outbox.done(db, m.messageId)).catch(() => undefined);
+          for (const m of requeued) await deliverInbound(deps, m).then(() => outbox.done(db, m.messageId, m.botId)).catch(() => undefined);
         }
         await usage.record(db, { runId: p.runId, teamId: p.teamId, botId: p.botId, provider: p.binding.kind, model: input.outcome.model, usage: usageSnap });
         await threads.touch(db, p.threadId);
-        if (input.outcome.sessionId) await threads.setAcpSession(db, p.threadId, input.outcome.sessionId, input.outcome.agentEpoch ?? null);
+        if (input.outcome.sessionId) await threads.setAcpSession(db, p.threadId, input.outcome.sessionId, input.outcome.agentEpoch ?? null, p.botId);
+
+        // Group conversations: a reply that @mentions other bots of the group hands work to them.
+        if (text && input.status === "completed") {
+          const group = await rooms.getByThread(db, p.threadId);
+          if (group) await handOff(deps, group, { id: bot.id, name: bot.name }, p, text);
+        }
 
         // Title for brand-new threads (fast model, best effort).
         const thread = await threads.getById(db, p.threadId);
@@ -576,3 +604,34 @@ export function createAgentActivities(deps: WorkerDeps): AgentActivities {
 }
 
 export type { AgentEvent };
+
+/**
+ * Bot-to-bot hand-off in a group: the reply is delivered to every other member it @mentions,
+ * as a message from this bot. Chains stop after GROUP_MAX_HOPS hand-offs, and a bot never
+ * triggers itself. Delivery goes through the outbox, so a hand-off survives a crash.
+ */
+async function handOff(deps: WorkerDeps, group: Group, from: { id: string; name: string }, p: PreparedTurn, text: string): Promise<void> {
+  const hops = (p.hops ?? 0) + 1;
+  const targets = mentionedBots(text, group.members).filter((id) => id !== from.id);
+  if (!targets.length) return;
+  if (hops > GROUP_MAX_HOPS) {
+    deps.log.info({ group: group.id, runId: p.runId }, "group hand-off limit reached; not forwarding");
+    return;
+  }
+  const inbound: InboundMessage[] = targets.map((botId) => ({
+    messageId: p.assistantMessageId,
+    threadId: group.threadId,
+    botId,
+    teamId: group.teamId,
+    channel: "group",
+    author: { type: "bot", id: from.id, name: from.name },
+    parts: [{ type: "text", text }],
+    replyTo: null,
+    hops,
+    receivedAt: nowIso(),
+  }));
+  await withTx(deps.db, async (tx) => {
+    for (const m of inbound) await outbox.add(tx, m);
+  });
+  for (const m of inbound) await deliverInbound(deps, m).then(() => outbox.done(deps.db, m.messageId, m.botId)).catch(() => undefined);
+}

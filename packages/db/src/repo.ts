@@ -8,6 +8,7 @@ import {
   type Bot,
   type Channel,
   type ContentPart,
+  type Group,
   type InboundMessage,
   type KnowledgeBase,
   type KnowledgeSource,
@@ -62,6 +63,123 @@ export const users = {
     );
     const row = r.rows[0] as Record<string, string>;
     return { id: row.id!, teamId: row.team_id!, externalId: row.external_id ?? null, email: row.email ?? null, name: row.name ?? null, role: row.role as UserRow["role"] };
+  },
+};
+
+/* ------------------------------------------------------------------ groups */
+
+export const rooms = {
+  async create(db: Queryable, g: { id: string; teamId: string; name: string; topic: string; threadId: string; createdBy: string; botIds: string[] }): Promise<Group> {
+    await db.query("INSERT INTO rooms (id, team_id, name, topic, thread_id, created_by) VALUES ($1, $2, $3, $4, $5, $6)", [g.id, g.teamId, g.name, g.topic, g.threadId, g.createdBy]);
+    await rooms.setMembers(db, g.id, g.botIds);
+    return (await rooms.get(db, g.teamId, g.id))!;
+  },
+  /** Replace the members; the first bot leads. */
+  async setMembers(db: Queryable, roomId: string, botIds: string[]): Promise<void> {
+    await db.query("DELETE FROM room_members WHERE room_id = $1", [roomId]);
+    for (const [i, botId] of botIds.entries()) await db.query("INSERT INTO room_members (room_id, bot_id, position, lead) VALUES ($1, $2, $3, $4)", [roomId, botId, i, i === 0]);
+  },
+  async update(db: Queryable, teamId: string, id: string, patch: { name?: string; topic?: string }): Promise<void> {
+    await db.query("UPDATE rooms SET name = COALESCE($3, name), topic = COALESCE($4, topic) WHERE id = $1 AND team_id = $2", [id, teamId, patch.name ?? null, patch.topic ?? null]);
+  },
+  async archive(db: Queryable, teamId: string, id: string): Promise<void> {
+    await db.query("UPDATE rooms SET archived = true WHERE id = $1 AND team_id = $2", [id, teamId]);
+  },
+  async list(db: Queryable, teamId: string): Promise<Group[]> {
+    const r = await db.query(
+      `SELECT r.*, t.last_activity_at,
+              COALESCE(json_agg(json_build_object('botId', m.bot_id, 'name', b.name, 'lead', m.lead, 'avatar', b.spec->>'avatar') ORDER BY m.position) FILTER (WHERE m.bot_id IS NOT NULL), '[]') AS members
+       FROM rooms r JOIN threads t ON t.id = r.thread_id
+       LEFT JOIN room_members m ON m.room_id = r.id LEFT JOIN bots b ON b.id = m.bot_id
+       WHERE r.team_id = $1 AND NOT r.archived GROUP BY r.id, t.last_activity_at ORDER BY t.last_activity_at DESC`,
+      [teamId],
+    );
+    return r.rows.map(groupFromRow);
+  },
+  async get(db: Queryable, teamId: string, id: string): Promise<Group | null> {
+    return (await rooms.list(db, teamId)).find((g) => g.id === id) ?? null;
+  },
+  async getByThread(db: Queryable, threadId: string): Promise<Group | null> {
+    const r = await db.query("SELECT team_id, id FROM rooms WHERE thread_id = $1 AND NOT archived", [threadId]);
+    if (!r.rows[0]) return null;
+    return rooms.get(db, r.rows[0].team_id as string, r.rows[0].id as string);
+  },
+};
+
+function groupFromRow(r: Record<string, unknown>): Group {
+  return {
+    id: r.id as string,
+    teamId: r.team_id as string,
+    name: r.name as string,
+    topic: (r.topic as string) ?? "",
+    threadId: r.thread_id as string,
+    members: (r.members as Group["members"]).map((m) => ({ botId: m.botId, name: m.name, lead: Boolean(m.lead), avatar: m.avatar ?? null })),
+    createdBy: r.created_by as string,
+    createdAt: isoReq(r.created_at as Date),
+  };
+}
+
+/* ------------------------------------------------------------------ api tokens */
+
+export interface ApiTokenRow {
+  id: string;
+  teamId: string;
+  userId: string;
+  userName: string | null;
+  name: string;
+  role: UserRow["role"];
+  prefix: string;
+  createdBy: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+const apiTokenFromRow = (r: Record<string, unknown>): ApiTokenRow => ({
+  id: r.id as string,
+  teamId: r.team_id as string,
+  userId: r.user_id as string,
+  userName: (r.user_name as string | null) ?? null,
+  name: r.name as string,
+  role: r.role as UserRow["role"],
+  prefix: r.prefix as string,
+  createdBy: r.created_by as string,
+  createdAt: isoReq(r.created_at as Date),
+  lastUsedAt: r.last_used_at ? isoReq(r.last_used_at as Date) : null,
+  expiresAt: r.expires_at ? isoReq(r.expires_at as Date) : null,
+  revokedAt: r.revoked_at ? isoReq(r.revoked_at as Date) : null,
+});
+
+export const apiTokens = {
+  async create(db: Queryable, t: { id: string; teamId: string; userId: string; userName: string | null; name: string; role: UserRow["role"]; tokenHash: string; prefix: string; createdBy: string; expiresAt: string | null }): Promise<ApiTokenRow> {
+    const r = await db.query(
+      `INSERT INTO api_tokens (id, team_id, user_id, user_name, name, role, token_hash, prefix, created_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [t.id, t.teamId, t.userId, t.userName, t.name, t.role, t.tokenHash, t.prefix, t.createdBy, t.expiresAt],
+    );
+    return apiTokenFromRow(r.rows[0]);
+  },
+  /** A usable token by hash (not revoked, not expired); touches last_used_at at most once a minute. */
+  async findActive(db: Queryable, tokenHash: string): Promise<ApiTokenRow | null> {
+    const r = await db.query(
+      `UPDATE api_tokens SET last_used_at = CASE WHEN last_used_at IS NULL OR last_used_at < now() - interval '1 minute' THEN now() ELSE last_used_at END
+       WHERE token_hash = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now()) RETURNING *`,
+      [tokenHash],
+    );
+    return r.rows[0] ? apiTokenFromRow(r.rows[0]) : null;
+  },
+  async list(db: Queryable, teamId: string, userId?: string): Promise<ApiTokenRow[]> {
+    const r = await db.query(`SELECT * FROM api_tokens WHERE team_id = $1 ${userId ? "AND (user_id = $2 OR created_by = $2)" : ""} ORDER BY created_at DESC LIMIT 500`, userId ? [teamId, userId] : [teamId]);
+    return r.rows.map(apiTokenFromRow);
+  },
+  async revoke(db: Queryable, teamId: string, id: string): Promise<ApiTokenRow | null> {
+    const r = await db.query("UPDATE api_tokens SET revoked_at = COALESCE(revoked_at, now()) WHERE team_id = $1 AND id = $2 RETURNING *", [teamId, id]);
+    return r.rows[0] ? apiTokenFromRow(r.rows[0]) : null;
+  },
+  async get(db: Queryable, teamId: string, id: string): Promise<ApiTokenRow | null> {
+    const r = await db.query("SELECT * FROM api_tokens WHERE team_id = $1 AND id = $2", [teamId, id]);
+    return r.rows[0] ? apiTokenFromRow(r.rows[0]) : null;
   },
 };
 
@@ -152,13 +270,27 @@ export const threads = {
   },
   async list(db: Queryable, teamId: string, botId: string, limit = 50, before?: string): Promise<Thread[]> {
     const r = await db.query(
-      `SELECT * FROM threads WHERE team_id = $1 AND bot_id = $2 AND NOT archived ${before ? "AND last_activity_at < $4" : ""} ORDER BY last_activity_at DESC LIMIT $3`,
+      `SELECT * FROM threads WHERE team_id = $1 AND bot_id = $2 AND NOT archived AND channel <> 'group' ${before ? "AND last_activity_at < $4" : ""} ORDER BY last_activity_at DESC LIMIT $3`,
       before ? [teamId, botId, limit, before] : [teamId, botId, limit],
     );
     return r.rows.map(threadFromRow);
   },
-  async setAcpSession(db: Queryable, threadId: string, sessionId: string | null, epoch: string | null): Promise<void> {
-    await db.query("UPDATE threads SET acp_session_id = $2, acp_agent_epoch = $3 WHERE id = $1", [threadId, sessionId, epoch]);
+  /** Remember a bot's agent session for a conversation (each bot of a group has its own). */
+  async setAcpSession(db: Queryable, threadId: string, sessionId: string | null, epoch: string | null, botId?: string): Promise<void> {
+    await db.query("UPDATE threads SET acp_session_id = $2, acp_agent_epoch = $3 WHERE id = $1 AND ($4::text IS NULL OR bot_id = $4)", [threadId, sessionId, epoch, botId ?? null]);
+    if (botId)
+      await db.query(
+        `INSERT INTO thread_sessions (thread_id, bot_id, acp_session_id, acp_agent_epoch) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (thread_id, bot_id) DO UPDATE SET acp_session_id = EXCLUDED.acp_session_id, acp_agent_epoch = EXCLUDED.acp_agent_epoch, updated_at = now()`,
+        [threadId, botId, sessionId, epoch],
+      );
+  },
+  /** The bot's agent session for a conversation, if it has one. */
+  async acpSessionFor(db: Queryable, threadId: string, botId: string): Promise<{ sessionId: string | null; epoch: string | null } | null> {
+    const r = await db.query("SELECT acp_session_id, acp_agent_epoch FROM thread_sessions WHERE thread_id = $1 AND bot_id = $2", [threadId, botId]);
+    if (r.rows[0]) return { sessionId: (r.rows[0].acp_session_id as string | null) ?? null, epoch: (r.rows[0].acp_agent_epoch as string | null) ?? null };
+    const t = await db.query("SELECT acp_session_id, acp_agent_epoch FROM threads WHERE id = $1 AND bot_id = $2", [threadId, botId]);
+    return t.rows[0] ? { sessionId: (t.rows[0].acp_session_id as string | null) ?? null, epoch: (t.rows[0].acp_agent_epoch as string | null) ?? null } : null;
   },
   async touch(db: Queryable, threadId: string): Promise<void> {
     await db.query("UPDATE threads SET last_activity_at = now() WHERE id = $1", [threadId]);
@@ -698,27 +830,27 @@ export interface OutboxEntry {
 export const outbox = {
   async add(db: Queryable, inbound: InboundMessage): Promise<void> {
     await db.query(
-      `INSERT INTO delivery_outbox (message_id, team_id, bot_id, inbound) VALUES ($1, $2, $3, $4) ON CONFLICT (message_id) DO NOTHING`,
+      `INSERT INTO delivery_outbox (message_id, team_id, bot_id, inbound) VALUES ($1, $2, $3, $4) ON CONFLICT (message_id, bot_id) DO NOTHING`,
       [inbound.messageId, inbound.teamId, inbound.botId, JSON.stringify(inbound)],
     );
   },
-  async done(db: Queryable, messageId: string): Promise<void> {
-    await db.query("DELETE FROM delivery_outbox WHERE message_id = $1", [messageId]);
+  async done(db: Queryable, messageId: string, botId: string): Promise<void> {
+    await db.query("DELETE FROM delivery_outbox WHERE message_id = $1 AND bot_id = $2", [messageId, botId]);
   },
-  async failed(db: Queryable, messageId: string, error: string, attempts: number): Promise<void> {
+  async failed(db: Queryable, messageId: string, botId: string, error: string, attempts: number): Promise<void> {
     // exponential backoff: 5s, 10s, 20s … capped at 5 minutes
     const delay = Math.min(300, 5 * 2 ** Math.min(attempts, 6));
     await db.query(
-      `UPDATE delivery_outbox SET attempts = attempts + 1, last_error = $2, next_attempt_at = now() + make_interval(secs => $3) WHERE message_id = $1`,
-      [messageId, error.slice(0, 1000), delay],
+      `UPDATE delivery_outbox SET attempts = attempts + 1, last_error = $3, next_attempt_at = now() + make_interval(secs => $4) WHERE message_id = $1 AND bot_id = $2`,
+      [messageId, botId, error.slice(0, 1000), delay],
     );
   },
   /** Claim due entries for this replica (lease of 60s so other replicas skip them). */
   async claim(db: Queryable, limit = 50, minAgeSeconds = 5): Promise<OutboxEntry[]> {
     const r = await db.query(
       `UPDATE delivery_outbox SET next_attempt_at = now() + interval '60 seconds'
-       WHERE message_id IN (
-         SELECT message_id FROM delivery_outbox
+       WHERE (message_id, bot_id) IN (
+         SELECT message_id, bot_id FROM delivery_outbox
          WHERE next_attempt_at <= now() AND created_at <= now() - make_interval(secs => $2)
          ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED)
        RETURNING message_id, inbound, attempts`,

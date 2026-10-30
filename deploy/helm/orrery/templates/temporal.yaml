@@ -1,0 +1,98 @@
+{{- if .Values.temporalServer.enabled }}
+{{- $fullname := include "orrery.fullname" . }}
+# Bundled Temporal server: `temporal server start-dev` (frontend, history, matching and the Web UI
+# in one process) with SQLite on a persistent volume. Right for trials and small teams; run the
+# official Temporal chart or Temporal Cloud for production (config.temporal.address).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-temporal
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal
+spec:
+  selector:
+    {{- include "orrery.selector" (dict "ctx" . "component" "temporal") | nindent 4 }}
+  ports:
+    - { name: grpc, port: 7233, targetPort: grpc }
+    - { name: ui, port: 8233, targetPort: ui }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-temporal
+  labels:
+    {{- include "orrery.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal
+spec:
+  serviceName: {{ $fullname }}-temporal
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orrery.selector" (dict "ctx" . "component" "temporal") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "orrery.labels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: temporal
+          image: {{ .Values.temporalServer.image }}
+          command: ["temporal"]
+          args:
+            - server
+            - start-dev
+            - --ip=0.0.0.0
+            - --port=7233
+            - --ui-port=8233
+            - --namespace={{ .Values.config.temporal.namespace }}
+            - --db-filename=/data/temporal.db
+            - --log-level=warn
+          env:
+            - { name: HOME, value: /tmp }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          ports:
+            - { name: grpc, containerPort: 7233 }
+            - { name: ui, containerPort: 8233 }
+          startupProbe:
+            tcpSocket: { port: grpc }
+            periodSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec: { command: ["temporal", "operator", "namespace", "describe", "--address", "127.0.0.1:7233", "--namespace", {{ .Values.config.temporal.namespace | quote }}] }
+            periodSeconds: 10
+            timeoutSeconds: 8
+          livenessProbe:
+            tcpSocket: { port: grpc }
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.temporalServer.resources | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.temporalServer.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.temporalServer.storage }}
+{{- end }}

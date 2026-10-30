@@ -1,0 +1,19 @@
+# CI on kind: locally built images (loaded into the node), an in-cluster fake model provider,
+# and egress from bot computers to it. Everything else is the chart's defaults.
+image:
+  tag: ci
+  pullPolicy: Never
+config:
+  providers:
+    - kind: openai
+      id: fake
+      baseUrl: http://fake-models.orrery.svc:8000/v1
+      roles: [chat, fast, extract]
+      models: { chat: [fake-small] }
+computers:
+  networkPolicy:
+    extraEgress:
+      - to:
+          - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: orrery } }
+            podSelector: { matchLabels: { app: fake-models } }
+        ports: [{ port: 8000, protocol: TCP }]

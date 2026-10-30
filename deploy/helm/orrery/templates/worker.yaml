@@ -132,7 +132,7 @@ spec:
   triggers:
     - type: temporal
       metadata:
-        endpoint: {{ $.Values.config.temporal.address | quote }}
+        endpoint: {{ include "orrery.temporalAddress" $ | quote }}
         namespace: {{ $.Values.config.temporal.namespace | quote }}
         taskQueue: {{ printf "%s-%s" $.Values.config.temporal.taskQueuePrefix $spec.queues | quote }}
         targetQueueSize: {{ $.Values.worker.keda.targetQueueSize | quote }}

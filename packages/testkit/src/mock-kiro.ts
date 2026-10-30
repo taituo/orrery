@@ -20,9 +20,11 @@ import { JsonRpcError, JsonRpcPeer, RPC_ERRORS, type MessageTransport } from "@o
  *   mcp: <server>/<tool> MCP tool call requiring permission (identity envelope)
  *   plan                emit a 3-step plan
  *   sleep: <ms>         wait (lets tests cancel / drop connections mid-turn)
+ *   handoff: <Bot> <task>  reply "@Bot <task>" (group hand-offs)
  *   refuse              stopReason refusal
  *   fail                JSON-RPC error from session/prompt
  *   auth-url: <server>  ask the client to open an OAuth URL (V3 `_kiro/openExternalUrl`)
+ * Lines inside Orrery context blocks (<orrery_context>, <group>, …) are ignored.
  */
 
 export type MockGeneration = "v3" | "v2";
@@ -368,9 +370,21 @@ export class MockKiroAgent {
     const cancelled = () => abort.signal.aborted;
     try {
       this.update(s.id, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Considering the request." } });
+      // Context blocks Orrery prepends (memory, group roster, history) are background, not
+      // requests: like a real model, the mock doesn't act on them.
+      let inContext: string | null = null;
       for (const raw of text.split("\n")) {
         const line = raw.trim();
         if (cancelled()) break;
+        if (inContext) {
+          if (line.includes(`</${inContext}>`)) inContext = null;
+          continue;
+        }
+        const open = /^<(orrery_context|conversation_so_far|bot_instructions|group)\b[^>]*>/.exec(line);
+        if (open) {
+          if (!line.includes(`</${open[1]}>`)) inContext = open[1]!;
+          continue;
+        }
         if (line.startsWith("run:")) {
           const ok = await this.toolWithPermission(s, "execute", line.slice(4).trim(), abort.signal);
           say(ok ? `Ran \`${line.slice(4).trim()}\`. ` : `Did not run \`${line.slice(4).trim()}\`. `);
@@ -383,6 +397,10 @@ export class MockKiroAgent {
           this.update(s.id, { sessionUpdate: "tool_call", toolCallId: id, title: `Reading ${path.basename(file)}`, kind: "read", status: "in_progress", rawInput: { path: file }, locations: [{ path: file, line: 1 }] });
           this.update(s.id, { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed", content: [{ type: "content", content: { type: "text", text: `(mock contents of ${file})` } }] });
           say(`Read ${file}. `);
+        } else if (line.startsWith("handoff:")) {
+          // "handoff: <Bot> <task>" → the reply mentions that bot (group hand-off).
+          const [who, ...task] = line.slice(8).trim().split(/\s+/);
+          say(`@${who} ${task.join(" ")}`);
         } else if (line === "plan") {
           this.update(s.id, {
             sessionUpdate: "plan",

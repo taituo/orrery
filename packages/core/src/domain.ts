@@ -222,7 +222,22 @@ export const BotPatchSchema = BotCreateSchema.partial().extend({ status: z.enum(
 /* Conversation                                                                                */
 /* ------------------------------------------------------------------------------------------ */
 
-export type Channel = "web" | "api" | "slack" | "routine" | "peer" | "webhook";
+export type Channel = "web" | "api" | "slack" | "routine" | "peer" | "webhook" | "group";
+
+/** A group conversation: 1–6 bots (the lead answers unless others are @mentioned) and people. */
+export interface Group {
+  id: string;
+  teamId: string;
+  name: string;
+  topic: string;
+  threadId: string;
+  members: Array<{ botId: string; name: string; lead: boolean; avatar?: string | null }>;
+  createdBy: string;
+  createdAt: string;
+}
+
+/** Most hand-offs (a bot mentioning another bot) one message can trigger in a group. */
+export const GROUP_MAX_HOPS = 6;
 
 export interface Thread {
   id: string;
@@ -441,5 +456,7 @@ export interface InboundMessage {
   replyTo?: { botId: string; threadId: string; delegationId: string } | null;
   /** Override the provider for this turn (e.g. a routine pinned to the fast model). */
   forceProvider?: "primary" | "fast" | null;
+  /** Group conversations: how many bot hand-offs led to this message (0 = from a person). */
+  hops?: number;
   receivedAt: string;
 }

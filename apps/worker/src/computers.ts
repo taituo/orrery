@@ -5,7 +5,7 @@ import * as k8s from "@kubernetes/client-node";
 import { GATEWAY_TOKEN_AUDIENCE, gatewayKeyFor, isPermanentAgentFailure, spawnAgent, KiroV3Adapter, KiroV2Adapter, OpenCodeAdapter, StandardAcpAdapter, openCodeEnvironment } from "@orrery/acp";
 import { AcpGateway, startGatewayServer, type AgentProcess } from "@orrery/acp-gateway";
 import { OrreryError, isOrreryError, signToken, sleep, type Bot, type Env, type ProviderConfig } from "@orrery/core";
-import { computers, type ComputerRow, type Db } from "@orrery/db";
+import { AGENT_ENV_SECRET_PREFIX, computers, secrets, type ComputerRow, type Db } from "@orrery/db";
 import { openCodeProviders } from "@orrery/providers";
 import type { Logger } from "pino";
 
@@ -56,6 +56,26 @@ export function openCodeEnv(bot: Bot, providers: readonly ProviderConfig[], path
     ...(b.config ? { extra: b.config } : {}),
     offline: bot.computer.network.mode !== "open",
   });
+}
+
+/** Keys of the platform providers an OpenCode bot calls directly (their apiKeyEnv variables). */
+export function openCodeProviderKeys(bot: Bot, providers: readonly ProviderConfig[], source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  if (bot.primary.kind !== "opencode-acp") return {};
+  const out: Record<string, string> = {};
+  for (const p of openCodeProviders(providers)) {
+    const v = p.apiKeyEnv ? source[p.apiKeyEnv] : undefined;
+    if (p.apiKeyEnv && v) out[p.apiKeyEnv] = v;
+  }
+  return out;
+}
+
+/**
+ * Environment secrets for a bot's computer: provider keys OpenCode needs plus the team's agent
+ * credentials set in the console (`agent-env.*`, these win).
+ */
+export async function agentSecretEnv(db: Db, env: Pick<Env, "ENCRYPTION_KEY">, bot: Bot, providers: readonly ProviderConfig[]): Promise<Record<string, string>> {
+  const team = await secrets.valuesWithPrefix(db, bot.teamId, AGENT_ENV_SECRET_PREFIX, env.ENCRYPTION_KEY);
+  return { ...openCodeProviderKeys(bot, providers), ...team };
 }
 
 export function computerIdFor(bot: Bot): string {
@@ -141,7 +161,7 @@ export class LocalComputerProvider implements ComputerProvider {
     writeFileSync(instructionsFile, steeringMarkdown(bot, { frontMatter: false }));
 
     const binary = this.env.LOCAL_AGENT_COMMAND ?? (kind === "opencode" ? this.env.OPENCODE_PATH : this.env.KIRO_CLI_PATH);
-    const agentEnv = kind === "opencode" ? openCodeEnv(bot, this.providers, { instructionsFile, workspace }) : {};
+    const agentEnv = { ...(await agentSecretEnv(this.db, this.env, bot, this.providers)), ...(kind === "opencode" ? openCodeEnv(bot, this.providers, { instructionsFile, workspace }) : {}) };
     const spawn = (): AgentProcess => {
       const adapter = kind === "kiro-v2" ? new KiroV2Adapter() : kind === "acp" ? new StandardAcpAdapter() : kind === "opencode" ? new OpenCodeAdapter() : new KiroV3Adapter();
       const binding = bot.primary.kind === "acp" ? { command: bot.primary.command, args: bot.primary.args } : bot.primary.kind === "kiro-acp" ? bot.primary : {};
@@ -218,7 +238,7 @@ export function k8sName(computerId: string): string {
  * Declarative manifests for one bot computer. Applied with server-side apply, so re-running
  * is idempotent and drift is corrected. Pod spec changes (image, size, network) roll the pod.
  */
-export function computerManifests(bot: Bot, env: Env, opts: { cilium?: boolean; providers?: readonly ProviderConfig[] } = {}): { objects: k8s.KubernetesObject[]; specHash: string; name: string } {
+export function computerManifests(bot: Bot, env: Env, opts: { cilium?: boolean; providers?: readonly ProviderConfig[]; secretEnv?: Record<string, string> } = {}): { objects: k8s.KubernetesObject[]; specHash: string; name: string } {
   const id = computerIdFor(bot);
   const name = k8sName(id);
   const ns = env.COMPUTER_NAMESPACE;
@@ -234,19 +254,24 @@ export function computerManifests(bot: Bot, env: Env, opts: { cilium?: boolean; 
     "orrery.dev/network": bot.computer.network.mode,
   };
   const agentEnv = kind === "opencode" ? openCodeEnv(bot, opts.providers ?? [], { instructionsFile: `${INSTRUCTIONS_DIR}/instructions.md`, workspace: "/home/agent/workspace" }) : {};
+  // The computer's own secrets: its gateway key and the agent credentials it may use.
+  const secretEnv: Record<string, string> = { ...(opts.secretEnv ?? {}), GATEWAY_TOKEN_KEY: gatewayKeyFor(env.GATEWAY_TOKEN_SECRET, id) };
+  const secretDigest = createHash("sha256").update(JSON.stringify(Object.entries(secretEnv).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
   const specHash = createHash("sha256")
-    .update(JSON.stringify({ image, size: bot.computer.size, kind, net: bot.computer.network, home: bot.computer.persistentHome, rc: env.COMPUTER_RUNTIME_CLASS ?? null, agentEnv }))
+    // Credentials are part of the spec (as a digest): changing one rolls the pod before the next turn.
+    .update(JSON.stringify({ image, size: bot.computer.size, kind, net: bot.computer.network, home: bot.computer.persistentHome, rc: env.COMPUTER_RUNTIME_CLASS ?? null, agentEnv, secretDigest }))
     .digest("hex")
     .slice(0, 16);
 
   const objects: k8s.KubernetesObject[] = [];
-  // This computer's own gateway key (the platform secret never enters the computers namespace).
+  // This computer's environment secret: its own gateway key (the platform secret never enters
+  // the computers namespace) and the agent credentials set for the team.
   objects.push({
     apiVersion: "v1",
     kind: "Secret",
-    metadata: { name: `${name}-gateway`, namespace: ns, labels },
+    metadata: { name: `${name}-env`, namespace: ns, labels },
     type: "Opaque",
-    stringData: { "token-key": gatewayKeyFor(env.GATEWAY_TOKEN_SECRET, id) },
+    stringData: secretEnv,
   } as k8s.V1Secret);
   objects.push({
     apiVersion: "v1",
@@ -294,17 +319,18 @@ export function computerManifests(bot: Bot, env: Env, opts: { cilium?: boolean; 
             { name: "AGENT_KIND", value: kind },
             { name: "WORKSPACE_ROOT", value: "/home/agent/workspace" },
             { name: "HOME", value: "/home/agent" },
-            { name: "GATEWAY_TOKEN_KEY", valueFrom: { secretKeyRef: { name: `${name}-gateway`, key: "token-key" } } },
-            { name: "KIRO_API_KEY", valueFrom: { secretKeyRef: { name: env.COMPUTER_KIRO_SECRET, key: "api-key", optional: true } } },
+            // A Kiro key set in the console (agent environment) wins over the cluster's Kiro secret.
+            ...(secretEnv.KIRO_API_KEY ? [] : [{ name: "KIRO_API_KEY", valueFrom: { secretKeyRef: { name: env.COMPUTER_KIRO_SECRET, key: "api-key", optional: true } } }]),
             ...(bot.primary.kind === "kiro-acp" && bot.primary.engine === "v2" && bot.primary.modeId ? [{ name: "KIRO_MODE", value: bot.primary.modeId }] : []),
             ...(bot.primary.kind === "kiro-acp" && bot.primary.engine === "v2" && bot.primary.modelId ? [{ name: "KIRO_MODEL", value: bot.primary.modelId }] : []),
             ...(bot.primary.kind === "kiro-acp" ? [{ name: "KIRO_AUTH_METHOD", value: bot.primary.authMethod }] : []),
             ...(bot.primary.kind === "acp" ? [{ name: "AGENT_COMMAND", value: bot.primary.command }, { name: "AGENT_ARGS", value: JSON.stringify(bot.primary.args) }] : []),
             ...Object.entries(agentEnv).map(([name, value]) => ({ name, value })),
           ],
-          // Model-provider credentials for agents that bring their own (OpenCode: ANTHROPIC_API_KEY,
-          // OPENAI_API_KEY, the apiKeyEnv of Orrery providers, …). Optional.
-          envFrom: [{ secretRef: { name: env.COMPUTER_AGENT_SECRET, optional: true } }],
+          // Credentials for agents that call model providers themselves (OpenCode: ANTHROPIC_API_KEY,
+          // OPENAI_API_KEY, the apiKeyEnv of Orrery providers, …): the cluster-wide agent secret
+          // (Helm, optional), then this computer's secret, which wins.
+          envFrom: [{ secretRef: { name: env.COMPUTER_AGENT_SECRET, optional: true } }, { secretRef: { name: `${name}-env` } }],
           resources: { requests: { cpu: size.cpu, memory: size.memory }, limits: { cpu: size.limitCpu, memory: size.limitMemory } },
           securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
           readinessProbe: { httpGet: { path: "/readyz", port: 7777 }, periodSeconds: 3, failureThreshold: 40 },
@@ -355,7 +381,8 @@ export class KubernetesComputerProvider implements ComputerProvider {
 
   async ensure(bot: Bot): Promise<ComputerHandle> {
     const id = computerIdFor(bot);
-    const { objects, specHash, name } = computerManifests(bot, this.env, this.opts);
+    const secretEnv = await agentSecretEnv(this.db, this.env, bot, this.opts.providers ?? []);
+    const { objects, specHash, name } = computerManifests(bot, this.env, { ...this.opts, secretEnv });
     const ns = this.env.COMPUTER_NAMESPACE;
     const handle: ComputerHandle = { computerId: id, endpoint: `ws://${name}.${ns}.svc:7777/acp`, agentKind: agentKindFor(bot), cwd: "/home/agent/workspace" };
 
