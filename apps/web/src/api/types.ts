@@ -60,6 +60,8 @@ export interface ApiToken {
 export interface SetupStatus {
   auth: { oidc: boolean; adminToken: boolean; via: string | null };
   computers: string;
+  /** allowlists: Cilium enforces per-host egress. basic: NetworkPolicies only (HTTPS out). unenforced: no Kubernetes. */
+  network?: "allowlists" | "basic" | "unenforced";
   agentEnv: string[];
   providers: { chat: string[]; decisions: string | null };
   engines: { kiro: string; opencode: string };

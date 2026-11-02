@@ -1000,6 +1000,7 @@ export class MockApi implements OrreryApi {
   setup = async (): Promise<SetupStatus> => ({
     auth: { oidc: false, adminToken: true, via: "admin-token" },
     computers: "kubernetes",
+    network: "basic",
     agentEnv: this.agentEnv.map((v) => v.name),
     providers: { chat: ["local-vllm"], decisions: "clef" },
     engines: { kiro: this.agentEnv.some((v) => v.name === "KIRO_API_KEY") ? "configured" : "needs KIRO_API_KEY (or a Kiro secret in the cluster)", opencode: "configured" },

@@ -640,6 +640,8 @@ export function createApp(deps: ApiDeps): { app: Hono<{ Variables: Vars }>; open
     return {
       auth: { oidc: Boolean(env.OIDC_ISSUER), adminToken: Boolean(env.ADMIN_TOKEN), via: p.via ?? null },
       computers: env.COMPUTER_PROVIDER,
+      // Per-host allowlists and "no network" need Cilium; without it restricted bots get HTTPS out.
+      network: env.COMPUTER_PROVIDER !== "kubernetes" ? "unenforced" : process.env.COMPUTER_CILIUM === "true" ? "allowlists" : "basic",
       agentEnv,
       providers: { chat: chat.map((c) => c.id), decisions: deps.providers.decisions()?.id ?? null },
       engines: {

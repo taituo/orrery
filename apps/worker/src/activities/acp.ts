@@ -322,8 +322,9 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
               }
             },
             onElicitation: async (req) => {
-              // Structured input requests are surfaced to the UI; v1 declines them in unattended runs.
+              // Structured input requests (ACP elicitation) are declined for now, and the person is told so.
               onEvent({ type: "elicitation.requested", elicitationId: String(req.elicitationId ?? newId("event")), message: req.message, mode: String(req.mode), ...(req.url ? { url: req.url } : {}), ...(req.requestedSchema ? { schema: req.requestedSchema } : {}) });
+              onEvent({ type: "notice", severity: "warning", title: "The agent asked for input; Orrery declined", message: `${req.message} — answering agent questions mid-turn is not supported yet, so the agent continues without it. Reply in the conversation instead.` });
               return { action: "decline" };
             },
           },
@@ -350,7 +351,13 @@ export function createAcpActivities(deps: WorkerDeps): AcpActivities {
           throw ApplicationFailure.create({ type: "worker_shutdown", message: "worker shutting down; the turn continues on another worker", nonRetryable: false });
         }
         const oe = isOrreryError(err) ? err : new OrreryError("provider_unavailable", err instanceof Error ? err.message : String(err), { cause: err });
-        if (oe.code !== "interrupted") sink.push({ type: "turn.failed", error: { code: oe.code, message: oe.message, retryable: oe.retryable } });
+        // A retryable failure is not the end of the turn: Temporal tries again (and finalizeTurn
+        // reports the failure if every attempt fails). Say what happened without ending the turn
+        // for clients watching the stream.
+        if (oe.code !== "interrupted") {
+          if (oe.retryable) sink.push({ type: "notice", severity: "warning", title: `Attempt ${ctx.info.attempt} failed; retrying`, message: oe.message });
+          else sink.push({ type: "turn.failed", error: { code: oe.code, message: oe.message, retryable: false } });
+        }
         // A retryable failure resumes this same turn, which takes the pending guidance itself.
         if (!oe.retryable || oe.code === "interrupted") await drainSteering();
         await sink.close();

@@ -19,6 +19,7 @@ const LOOKS: Array<{ value: Theme; label: string; what: string }> = [
 
 const KNOWN_CREDENTIALS: Array<{ name: string; what: string }> = [
   { name: "KIRO_API_KEY", what: "Kiro bots (Pro, Pro+, Pro Max or Power plan)" },
+  { name: "KIRO_ACCESS_TOKEN", what: "Kiro bots set to the client auth method: the token JSON the computer hands to Kiro" },
   { name: "ANTHROPIC_API_KEY", what: "OpenCode bots on anthropic/… models" },
   { name: "OPENAI_API_KEY", what: "OpenCode bots on openai/… models" },
   { name: "OPENROUTER_API_KEY", what: "OpenCode bots on openrouter/… models" },

@@ -42,8 +42,8 @@ export function BotSettingsPage() {
   const isAdmin = useCan("admin");
   const existing = useLoad((a) => (botId ? a.getBot(botId) : Promise.resolve(null)), [], botId ?? "new");
   const refs = useLoad(async (a) => {
-    const [providers, kbs, bots, secrets] = await Promise.all([a.providers(), a.listKnowledgeBases(), a.listBots(), a.listSecrets().catch(() => [])]);
-    return { providers: providers.providers, kbs, bots, secrets };
+    const [providers, kbs, bots, secrets, setup] = await Promise.all([a.providers(), a.listKnowledgeBases(), a.listBots(), a.listSecrets().catch(() => []), a.setup().catch(() => null)]);
+    return { providers: providers.providers, kbs, bots, secrets, network: setup?.network ?? null };
   }, []);
   const [f, setF] = useState<Form>(blank);
   const [configText, setConfigText] = useState<string | null>(null);
@@ -197,6 +197,7 @@ export function BotSettingsPage() {
                       <option value="cli">The CLI's own login (API key on the bot computer)</option>
                       <option value="client">Orrery supplies tokens (client auth method)</option>
                     </select>
+                    {f.primary.authMethod === "client" && <small>The computer answers Kiro's token requests from the KIRO_ACCESS_TOKEN agent credential (Settings → Agent credentials): the token JSON Kiro expects. Replace it before it expires.</small>}
                   </label>
                 )}
               </>
@@ -426,6 +427,13 @@ export function BotSettingsPage() {
                     <textarea className="textarea mono" rows={3} value={f.computer.network.allow.join("\n")} onChange={(e) => set("computer", { ...f.computer, network: { ...f.computer.network, allow: e.target.value.split(/\s+/).filter(Boolean) } })} placeholder={"github.com\n*.githubusercontent.com"} />
                     <small>One per line. Kiro's own endpoints and the Orrery platform are always reachable; OpenCode bots need their model provider's API host here.</small>
                   </label>
+                )}
+                {refs.data?.network && refs.data.network !== "allowlists" && f.computer.network.mode !== "open" && (
+                  <p className="notice">
+                    {refs.data.network === "basic"
+                      ? "This cluster doesn't enforce host allowlists (that needs Cilium: computers.cilium in the Helm values). Until then, this bot's computer can reach the platform and any HTTPS address, and the list above is not applied."
+                      : "Bot computers run without Kubernetes here, so network limits are not enforced."}
+                  </p>
                 )}
                 <label className="check">
                   <input type="checkbox" checked={f.computer.persistentHome} onChange={(e) => set("computer", { ...f.computer, persistentHome: e.target.checked })} />
