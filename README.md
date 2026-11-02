@@ -20,6 +20,24 @@ Durable, self-hosted AI teammates: always-on agents (in the spirit of Grok Bots)
   - `/mcp`. People's tokens get tools to ask bots and decide approvals from any MCP client; agents get memory, knowledge and delegation tools.
   - A web console: one conversation per bot or group, approvals inline, a floating composer with @mentions and live steering. Every look is a live paper-design shader under frosted glass that reacts to the bots: it moves faster while they work, warms and breathes while one waits for you, and flares when you send something. Looks: Warm, Dusk, Eclipse (a ring of fire around a dark sun), Synapse (filaments that fire while bots think), Nebula (a glass planet stirring the dark), and Wireframe (plain white, black hairlines, nothing moves). A clickable prototype builds to a single HTML file.
 
+## Screenshots
+
+The console in its Wireframe look, running on the prototype's simulated data. Every screen also comes in the animated looks: Warm, Dusk, Eclipse, Synapse and Nebula.
+
+| | |
+| --- | --- |
+| ![Home: who is working and who is waiting for you](docs/screenshots/wire-home.png) | ![A bot at work: plan, tool calls, steering](docs/screenshots/wire-bot-chat.png) |
+| Home | A bot at work |
+| ![An approval inline in the conversation](docs/screenshots/wire-approval.png) | ![A group chat with an @mention](docs/screenshots/wire-group-mention.png) |
+| Approval in the conversation | Group chat, @mentioning a bot |
+| ![Everything waiting for you](docs/screenshots/wire-approvals.png) | ![Settings: credentials, tokens, CLI and MCP, appearance](docs/screenshots/wire-settings.png) |
+| Waiting for you | Settings |
+
+<p>
+  <img src="docs/screenshots/wire-phone-home.png" alt="Home on a phone" width="260">
+  <img src="docs/screenshots/wire-phone-chat.png" alt="An approval on a phone" width="260">
+</p>
+
 ## Status
 
 Pre-release. What is and isn't verified:
