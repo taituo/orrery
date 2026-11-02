@@ -8,6 +8,8 @@ export interface GatewayServerOptions {
   port: number;
   host?: string;
   tokenSecret: string;
+  /** How often to ping workers; a worker that misses one pong is disconnected (default 15 s). */
+  pingIntervalMs?: number;
   /** Tokens must be minted for this computer (`sub`). */
   computerId: string;
   logger?: { info(o: object, m?: string): void; warn(o: object, m?: string): void };
@@ -74,14 +76,27 @@ export function startGatewayServer(gateway: AcpGateway, opts: GatewayServerOptio
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      alive.set(ws, true);
+      ws.on("pong", () => alive.set(ws, true));
       gateway.attachUpstream(new WebSocketTransport(ws), { remote: req.socket.remoteAddress ?? "?" });
     });
   });
 
-  // Keepalive so idle connections through proxies/LBs are not dropped mid-turn.
+  // Keepalive so idle connections through proxies/LBs are not dropped mid-turn, and dead-peer
+  // detection: a worker whose pod vanished never closes its socket, so one that misses a pong
+  // is terminated (its sessions and held requests then go to the next worker that attaches).
+  const alive = new WeakMap<object, boolean>();
   const ping = setInterval(() => {
-    for (const ws of wss.clients) if (ws.readyState === ws.OPEN) ws.ping();
-  }, 20_000);
+    for (const ws of wss.clients) {
+      if (ws.readyState !== ws.OPEN) continue;
+      if (alive.get(ws) === false) {
+        ws.terminate();
+        continue;
+      }
+      alive.set(ws, false);
+      ws.ping();
+    }
+  }, opts.pingIntervalMs ?? 15_000);
   ping.unref();
   server.on("close", () => clearInterval(ping));
 

@@ -461,7 +461,14 @@ export class AcpGateway {
         }
       }
     }
-    for (const h of this.held.values()) if (h.sessionId === p.sessionId) this.deliverHeld(h);
+    // The new owner takes over requests still waiting on a previous owner. That owner may be
+    // dead without its connection having closed (a pod deleted on Kubernetes: no FIN, no RST),
+    // so waiting for it would hang the turn. Whoever answers first wins.
+    for (const h of this.held.values()) {
+      if (h.sessionId !== p.sessionId) continue;
+      if (h.deliveredTo && h.deliveredTo !== up) h.deliveredTo = null;
+      this.deliverHeld(h);
+    }
     const completedKeys = [...this.prompts.values()].filter((x) => x.sessionId === p.sessionId && x.result.settled).map((x) => x.requestKey);
     for (const pr of this.prompts.values()) if (pr.sessionId === p.sessionId && !pr.result.settled) pr.requester = up;
     const asked = p.requestKey ? this.prompts.get(p.requestKey) : undefined;

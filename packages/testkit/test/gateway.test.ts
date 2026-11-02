@@ -216,6 +216,37 @@ describe("ACP gateway", () => {
     expect(text).toBe("You said: start. Ran `make deploy`. You said: end. ");
   });
 
+  it("a new attempt takes over a permission held by a worker that died silently (socket never closed)", async () => {
+    const h = await startHarness();
+    const r1 = recorder();
+    const permissionSeen = deferred<void>();
+    // Attempt 1 gets the permission request, then its pod vanishes: no answer, no close.
+    void runAcpTurn(
+      { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true },
+      { requestKey: "run_z", messageId: "m", session, prompt: [{ type: "text", text: "start\nrun: make deploy\nend" }] },
+      { ...r1, decidePermission: () => (permissionSeen.resolve(), new Promise<PermissionDecision>(() => undefined)) },
+      new AbortController().signal,
+    ).catch(() => undefined);
+    await permissionSeen.promise;
+    const progress = r1.progress!;
+    const r2 = recorder();
+    const res = await runAcpTurn(
+      { connect: () => connectWebSocket({ url: h.url, token: token() }), adapter: new KiroV3Adapter(), viaGateway: true },
+      {
+        requestKey: "run_z",
+        messageId: "m",
+        session,
+        prompt: [{ type: "text", text: "start\nrun: make deploy\nend" }],
+        resume: { sessionId: progress.sessionId!, afterSeq: progress.lastSeq, agentEpoch: progress.agentEpoch, promptSent: true },
+      },
+      { ...r2, decidePermission: allowOnce },
+      new AbortController().signal,
+    );
+    expect(res.stopReason).toBe("end_turn");
+    expect(h.prompts()).toBe(1);
+    expect(foldTranscript([...r1.events, ...r2.events]).assistantText).toBe("You said: start. Ran `make deploy`. You said: end. ");
+  }, 15_000);
+
   it("worker shutdown detaches without cancelling: the agent keeps working and the next attempt finishes the turn", async () => {
     const h = await startHarness();
     const r1 = recorder();
