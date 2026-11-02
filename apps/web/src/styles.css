@@ -419,6 +419,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .orb.waiting::after { opacity: 1; box-shadow: 0 0 0 2px var(--accent); animation: breathe 2.2s ease-in-out infinite; }
 .orb.paused { filter: grayscale(0.85) opacity(0.55); }
 .orb.add { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ink-3); color: var(--ink-2); text-shadow: none; font-size: 22px; font-weight: 300; }
+/* Planets: the shader draws the body; the orb keeps only its state rings. */
+.orb.has-planet { background: none; box-shadow: none; text-shadow: none; }
+.orb .planet { position: absolute; inset: -12.5%; width: 125%; height: 125%; pointer-events: none; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.18)); }
+.orb.has-planet .orb-letter { display: none; }
+.orb.has-planet.working::after { opacity: 0.55; }
+:root[data-theme="wire"] .orb .planet { display: none; }
+:root[data-theme="wire"] .orb.has-planet .orb-letter { display: inline; }
+.orb-stack .orb.has-planet { box-shadow: none; }
 .orb-stack { display: inline-flex; flex: none; }
 .orb-stack .orb { margin-left: -10px; box-shadow: 0 0 0 2px var(--glass-2), 0 8px 22px -10px var(--hue-b); }
 .orb-stack .orb:first-child { margin-left: 0; }
@@ -652,3 +660,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .look.wire .look-preview { background: #fff; box-shadow: inset 0 0 0 1.5px #000; }
 :root[data-theme="wire"] .look { border: 1px solid #000; background: #fff; }
 :root[data-theme="wire"] .look[aria-checked="true"] { box-shadow: 0 0 0 2px #000; }
+
+/* ------------------------------------------------------------------ planet picker */
+.planet-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; }
+.planet-picker button { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 4px 8px; border: 0; border-radius: 16px; background: none; color: var(--ink-2); font: inherit; font-size: 12.5px; cursor: pointer; }
+.planet-picker button:hover { background: var(--well); color: var(--ink); }
+.planet-picker button[aria-checked="true"] { background: var(--glass-2); color: var(--ink); box-shadow: 0 0 0 2px var(--accent); }
+:root[data-theme="wire"] .planet-picker .orb .planet { display: block; }

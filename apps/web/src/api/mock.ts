@@ -83,7 +83,7 @@ function seedBots(): Bot[] {
     mk({
       id: "bot_ada",
       name: "Ada",
-      avatar: "A",
+      avatar: "planet:9",
       description: "On-call platform engineer for the staging and production clusters.",
       instructions: "You are Ada, the platform team's on-call teammate. Prefer reading state before changing it. Never restart production workloads without approval. Summarize findings as: what's wrong, evidence, what you did, what's next.",
       primary: { kind: "kiro-acp", engine: "v3", modeId: "vibe", modelId: "claude-sonnet-4.5", effort: "high", authMethod: "cli" },
@@ -94,7 +94,7 @@ function seedBots(): Bot[] {
     mk({
       id: "bot_scout",
       name: "Scout",
-      avatar: "S",
+      avatar: "planet:4",
       description: "Research and triage. Answers quick questions with a small model, digs in with Kiro when needed.",
       instructions: "You are Scout. Be brief. Cite sources.",
       primary: { kind: "kiro-acp", engine: "auto", authMethod: "cli" },
@@ -106,7 +106,7 @@ function seedBots(): Bot[] {
     mk({
       id: "bot_quill",
       name: "Quill",
-      avatar: "Q",
+      avatar: "planet:1",
       description: "Keeps the docs site and changelogs current. Runs on the legacy Kiro CLI v2 engine.",
       instructions: "You are Quill, a technical writer. Match the existing docs voice.",
       primary: { kind: "kiro-acp", engine: "v2", modeId: "docs-writer", modelId: "claude-sonnet-4.5", authMethod: "cli" },
@@ -115,7 +115,7 @@ function seedBots(): Bot[] {
     mk({
       id: "bot_patch",
       name: "Patch",
-      avatar: "P",
+      avatar: "planet:13",
       description: "Fixes flaky tests and small bugs in the web repo. Runs OpenCode on the team's self-hosted model.",
       instructions: "You are Patch. Reproduce first, change as little as possible, and run the affected tests before you report back.",
       primary: { kind: "opencode-acp", modeId: "build", modelId: "orrery-local-vllm/qwen3-235b-a22b", smallModelId: "orrery-local-vllm/qwen3-30b-a3b", permissions: "orrery" },
@@ -125,7 +125,7 @@ function seedBots(): Bot[] {
     mk({
       id: "bot_ledger",
       name: "Ledger",
-      avatar: "L",
+      avatar: "planet:14",
       description: "Cloud cost analyst. Uses the team's self-hosted model through an OpenAI-compatible endpoint.",
       instructions: "You are Ledger. Report costs in EUR with week-over-week change.",
       primary: { kind: "openai", providerId: "local-vllm", model: "qwen3-235b-a22b", maxSteps: 12 },
@@ -134,7 +134,7 @@ function seedBots(): Bot[] {
     mk({
       id: "bot_relay",
       name: "Relay",
-      avatar: "R",
+      avatar: "planet:5",
       description: "Customer escalations bridge. Paused while the support rotation is reorganized.",
       primary: { kind: "kiro-acp", engine: "v3", authMethod: "cli" },
       status: "paused",
@@ -258,7 +258,7 @@ export class MockApi implements OrreryApi {
 
     // A group: Ada leads; she hands the changelog note to Quill.
     const gt = this.mkThread("bot_ada", "incidents", "group", 60 * 5);
-    this.groups.push({ id: "room_incidents", teamId: TEAM, name: "incidents", topic: "Production incidents and the follow-ups", threadId: gt.id, members: [{ botId: "bot_ada", name: "Ada", lead: true, avatar: "A" }, { botId: "bot_scout", name: "Scout", lead: false, avatar: "S" }, { botId: "bot_quill", name: "Quill", lead: false, avatar: "Q" }], createdBy: ME.userId, createdAt: ago(60 * 24 * 6) });
+    this.groups.push({ id: "room_incidents", teamId: TEAM, name: "incidents", topic: "Production incidents and the follow-ups", threadId: gt.id, members: [{ botId: "bot_ada", name: "Ada", lead: true, avatar: "planet:9" }, { botId: "bot_scout", name: "Scout", lead: false, avatar: "planet:4" }, { botId: "bot_quill", name: "Quill", lead: false, avatar: "planet:1" }], createdBy: ME.userId, createdAt: ago(60 * 24 * 6) });
     const ada = this.bots.find((b) => b.id === "bot_ada")!;
     const quill = this.bots.find((b) => b.id === "bot_quill")!;
     const first = await this.simulate(gt, "Checkout is throwing 502s for some users after this morning's deploy to staging. Can someone take a look?", "incident", { instant: true, at: 60 * 5, autoDecide: "allow", handoff: { to: quill, task: "could you add a line about the timeout fix to the 2.14 changelog?" } });

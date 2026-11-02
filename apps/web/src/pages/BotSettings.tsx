@@ -1,3 +1,5 @@
+import { Planet } from "../planets/Planet";
+import { PLANETS, PLANET_PREFIX, planetIndexFor } from "../planets/designs";
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 import type { Bot, BotCreate } from "../api";
@@ -45,7 +47,8 @@ export function BotSettingsPage() {
     const [providers, kbs, bots, secrets, setup] = await Promise.all([a.providers(), a.listKnowledgeBases(), a.listBots(), a.listSecrets().catch(() => []), a.setup().catch(() => null)]);
     return { providers: providers.providers, kbs, bots, secrets, network: setup?.network ?? null };
   }, []);
-  const [f, setF] = useState<Form>(blank);
+  // A new bot starts with a planet of its own (the id it will get is not known yet).
+  const [f, setF] = useState<Form>(() => (botId ? blank() : { ...blank(), avatar: `${PLANET_PREFIX}${Math.floor(Math.random() * PLANETS.length)}` }));
   const [configText, setConfigText] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<Error | null>(null);
@@ -131,15 +134,26 @@ export function BotSettingsPage() {
       <fieldset disabled={ro} style={{ border: 0, padding: 0, margin: 0 }}>
         <div className="form-grid">
           <Section title="Identity" help="How the bot introduces itself and what it's for.">
-            <div className="two">
-              <label className="field">
-                <span>Name</span>
-                <input className="input" required value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Ada" />
-              </label>
-              <label className="field">
-                <span>Initials</span>
-                <input className="input" maxLength={2} value={f.avatar ?? ""} onChange={(e) => set("avatar", e.target.value)} placeholder={f.name[0] ?? "A"} />
-              </label>
+            <label className="field">
+              <span>Name</span>
+              <input className="input" required value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Ada" />
+            </label>
+            <div className="field">
+              <span>Planet</span>
+              <div className="planet-picker" role="radiogroup" aria-label="Planet">
+                {PLANETS.map((pl, i) => {
+                  const chosen = planetIndexFor(botId ?? f.name, f.avatar) === i;
+                  return (
+                    <button type="button" key={pl.name} role="radio" aria-checked={chosen} title={pl.name} onClick={() => set("avatar", `${PLANET_PREFIX}${i}`)}>
+                      <span className="orb lg has-planet">
+                        <Planet design={i} size="lg" />
+                      </span>
+                      <span>{pl.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <small>How the bot appears everywhere. It turns faster while the bot works and glows when it waits for you.</small>
             </div>
             <label className="field">
               <span>Job description</span>

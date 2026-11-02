@@ -1,5 +1,7 @@
 import type { CSSProperties } from "react";
 import type { BotActivity } from "./ui";
+import { Planet, planetsSupported } from "../planets/Planet";
+import { initialsFor, planetIndexFor } from "../planets/designs";
 
 /** Each bot gets its own warm light, derived from its id, so it is recognisable everywhere. */
 const LIGHTS: Array<[string, string, string]> = [
@@ -22,9 +24,11 @@ export function lightFor(id: string): [string, string, string] {
 export function Orb({ id, name, avatar, activity, size, title }: { id: string; name: string; avatar?: string | null; activity?: BotActivity | undefined; size?: "sm" | "lg" | "xl"; title?: string }) {
   const [a, b, c] = lightFor(id);
   const style = { "--hue-a": a, "--hue-b": b, "--hue-c": c } as CSSProperties;
+  const planet = planetsSupported();
   return (
-    <span className={`orb ${size ?? ""} ${activity ?? ""}`} style={style} aria-hidden={title ? undefined : true} title={title}>
-      {(avatar || name[0] || "?").slice(0, 2)}
+    <span className={`orb ${size ?? ""} ${activity ?? ""} ${planet ? "has-planet" : ""}`} style={style} aria-hidden={title ? undefined : true} title={title}>
+      {planet && <Planet design={planetIndexFor(id, avatar)} size={size ?? "md"} energy={activity === "working" ? 1 : 0} alert={activity === "waiting" ? 1 : 0} />}
+      <span className="orb-letter">{initialsFor(name, avatar)}</span>
     </span>
   );
 }

@@ -233,7 +233,14 @@ try {
   for (const id of watched.slice(-2)) {
     try {
       const { runs } = await call("GET", `/v1/threads/${id}/runs`);
-      for (const r of runs) log(`thread ${id} run ${r.id} bot=${r.botId} ${r.status}${r.error ? ` ${JSON.stringify(r.error).slice(0, 400)}` : ""}`);
+      for (const r of runs) {
+        log(`thread ${id} run ${r.id} bot=${r.botId} ${r.status}${r.error ? ` ${JSON.stringify(r.error).slice(0, 400)}` : ""}`);
+        if (r.status === "completed") continue;
+        const { events } = await call("GET", `/v1/runs/${r.id}/events`);
+        log(`  events: ${events.slice(-14).map((e) => e.event.type + (e.event.type === "notice" ? `(${e.event.title})` : e.event.type === "approval.resolved" ? `(${e.event.outcome} by ${e.event.decidedBy})` : "")).join(", ")}`);
+        const { approvals } = await call("GET", `/v1/approvals?botId=${r.botId}&status=all`).catch(() => ({ approvals: [] }));
+        for (const a of approvals.filter((x) => x.runId === r.id)) log(`  approval ${a.id} ${a.status} ${a.toolCallId ?? ""}`);
+      }
     } catch (e) {
       log(`(could not read runs of ${id}: ${e.message})`);
     }
