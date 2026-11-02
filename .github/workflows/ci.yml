@@ -324,7 +324,7 @@ jobs:
           mkdir -p diag
           kubectl get pods -A -o wide > diag/pods.txt 2>&1 || true
           { kubectl -n $NS get events --sort-by=.lastTimestamp | tail -40; kubectl -n orrery-computers get events --sort-by=.lastTimestamp | tail -40; } > diag/events.txt 2>&1 || true
-          for d in api worker-agent worker-acp worker-memory web temporal; do
+          for d in api worker-agent worker-acp worker-memory web temporal migrate; do
             kubectl -n $NS logs -l app.kubernetes.io/component=$d --tail=400 --all-containers --prefix > diag/$d.txt 2>&1 || true
             kubectl -n $NS logs -l app.kubernetes.io/component=$d --tail=400 --all-containers --prefix --previous >> diag/$d.txt 2>/dev/null || true
             grep -iE '"level":(40|50|60)|error|warn|fail' diag/$d.txt > diag/$d.problems.txt || true
@@ -340,6 +340,7 @@ jobs:
           $a "worker-agent problems" diag/worker-agent.problems.txt
           $a "worker-acp log" diag/worker-acp.txt
           $a "computers" diag/computers.txt
+          $a "migrate" diag/migrate.txt
           $a "events" diag/events.txt
           $a "pods" diag/pods.txt
 

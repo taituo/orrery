@@ -32,7 +32,9 @@ spec:
       initContainers:
         - name: wait-for-postgres
           image: {{ .Values.postgresql.image }}
-          command: ["sh", "-c", "until pg_isready -h {{ include "orrery.fullname" . }}-postgresql -p 5432; do sleep 2; done"]
+          # -U is required: this runs as uid 1000, which has no account in the Postgres image, and
+          # without a user libpq cannot even try ("no attempt" forever). Give up after 5 minutes.
+          command: ["sh", "-c", "for i in $(seq 1 150); do pg_isready -h {{ include "orrery.fullname" . }}-postgresql -p 5432 -U orrery -d orrery && exit 0; sleep 2; done; echo 'PostgreSQL did not become ready' >&2; exit 1"]
           securityContext:
             {{- toYaml .Values.containerSecurityContext | nindent 12 }}
       {{- end }}
